@@ -1,0 +1,1025 @@
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { api } from '../api/client';
+import type { Competition, Fixture, GameweekResponse, MyStatusResponse, Participant, PickResponse } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
+import { colors, spacing } from '../theme/tokens';
+
+type PickStat = {
+  teamId?: number;
+  teamName?: string;
+  teamShortName: string;
+  pickCount: number;
+  percentage?: number;
+};
+
+function parseDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const dt = new Date(value.endsWith('Z') || value.includes('+') ? value : `${value}Z`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function formatDateSafe(value?: string | null): string {
+  if (!value) return '—';
+  const dt = new Date(value.endsWith('Z') || value.includes('+') ? value : `${value}Z`);
+  if (Number.isNaN(dt.getTime())) return '—';
+  return dt.toLocaleString();
+}
+
+
+function formatDateShort(value?: string | null): string {
+  const dt = parseDate(value);
+  if (!dt) return '—';
+  return dt.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) + ', ' +
+    dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function isPastDate(value?: string | null): boolean {
+  const dt = parseDate(value);
+  return !!dt && dt.getTime() < Date.now();
+}
+
+function distanceToNow(value?: string | null): string {
+  const dt = parseDate(value);
+  if (!dt) return 'soon';
+  const diff = dt.getTime() - Date.now();
+  const abs = Math.abs(diff);
+  const mins = Math.max(1, Math.round(abs / 60000));
+  const hours = Math.round(abs / 3600000);
+  const days = Math.round(abs / 86400000);
+  const unit = days >= 1 ? `${days} day${days === 1 ? '' : 's'}` : hours >= 1 ? `${hours} hour${hours === 1 ? '' : 's'}` : `${mins} min${mins === 1 ? '' : 's'}`;
+  return diff >= 0 ? `in ${unit}` : `${unit} ago`;
+}
+
+function prizeLabel(competition?: Competition): string {
+  if (!competition) return '—';
+  if (competition.prizePool && competition.prizePool > 0) return `€${competition.prizePool}`;
+  if (competition.entryFee > 0) return `€${competition.entryFee}`;
+  return 'Free';
+}
+
+function outcomeText(outcome?: string): string {
+  switch (outcome) {
+    case 'ADVANCE': return '✓ Advanced';
+    case 'ELIMINATED': return '✗ Eliminated';
+    case 'POSTPONED_ADVANCE': return '↷ Postponed';
+    case 'OUT': return '○ Out';
+    case 'PENDING': return '⏳ Pending';
+    default: return outcome ?? 'PENDING';
+  }
+}
+
+function statusTone(status?: string) {
+  if (status === 'ACTIVE') return 'success' as const;
+  if (status === 'UPCOMING') return 'brand' as const;
+  if (status === 'COMPLETED') return 'warn' as const;
+  return 'neutral' as const;
+}
+
+
+function formatKickoffDate(value?: string | null): string {
+  const dt = parseDate(value);
+  if (!dt) return '—';
+  return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatKickoffTime(value?: string | null): string {
+  const dt = parseDate(value);
+  if (!dt) return '—';
+  return dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function outcomeTone(outcome?: string) {
+  if (outcome === 'WIN' || outcome === 'ADVANCE' || outcome === 'POSTPONED_ADVANCE') return 'success' as const;
+  if (outcome === 'LOSS' || outcome === 'ELIMINATED' || outcome === 'OUT') return 'danger' as const;
+  if (outcome === 'DRAW') return 'brand' as const;
+  if (outcome === 'PENDING') return 'neutral' as const;
+  return 'neutral' as const;
+}
+
+function pickOutcomeTextStyle(outcome?: string) {
+  const normalized = String(outcome ?? '').toUpperCase();
+  if (normalized === 'ADVANCE' || normalized === 'WIN') return styles.pickOutcomeAdvanced;
+  if (normalized === 'ELIMINATED' || normalized === 'LOSS' || normalized === 'OUT') return styles.pickOutcomeEliminated;
+  if (normalized === 'POSTPONED_ADVANCE' || normalized === 'DRAW') return styles.pickOutcomePostponed;
+  return styles.pickOutcomePending;
+}
+
+export default function CompetitionDetailScreen() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{ id: string }>();
+  const id = Number(params.id);
+  const [selectedEntryId, setSelectedEntryId] = useState<number | null>(null);
+  const [collapsedWeeks, setCollapsedWeeks] = useState<Set<number>>(new Set());
+  const [mobileInsightsOpen, setMobileInsightsOpen] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const [lifelineForGwId, setLifelineForGwId] = useState<number | null>(null);
+  const [mobileRulesOpen, setMobileRulesOpen] = useState(false);
+
+  const competitionQuery = useQuery({
+    queryKey: ['competition', id],
+    queryFn: async () => (await api.get<Competition>(`/competitions/${id}`)).data,
+    enabled: Number.isFinite(id),
+  });
+
+  const myEntriesQuery = useQuery({
+    queryKey: ['competition', id, 'my-entries'],
+    queryFn: async () => (await api.get<Participant[]>(`/competitions/${id}/my-entries`)).data ?? [],
+    enabled: Number.isFinite(id),
+  });
+
+  useEffect(() => {
+    if (!myEntriesQuery.data || myEntriesQuery.data.length === 0) {
+      setSelectedEntryId(null);
+      return;
+    }
+    if (selectedEntryId && myEntriesQuery.data.some((e) => e.id === selectedEntryId)) return;
+    setSelectedEntryId(myEntriesQuery.data[0].id);
+  }, [myEntriesQuery.data, selectedEntryId]);
+
+  const joined = (myEntriesQuery.data?.length ?? 0) > 0;
+  const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
+  const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
+  const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
+
+  const myStatusQuery = useQuery({
+    queryKey: ['competition', id, 'my-status', selectedEntryId],
+    queryFn: async () => (await api.get<MyStatusResponse>(`/competitions/${id}/me`, { params: selectedEntryId ? { entryId: selectedEntryId } : undefined })).data,
+    enabled: Number.isFinite(id) && joined,
+  });
+
+  const joinMutation = useMutation({
+    mutationFn: async () => api.post(`/competitions/${id}/join`),
+    onSuccess: async () => {
+      await myEntriesQuery.refetch();
+      await competitionQuery.refetch();
+      await myStatusQuery.refetch();
+    },
+  });
+
+
+  const pickMutation = useMutation({
+    mutationFn: async ({ gwId, teamId, useLifeline }: { gwId: number; teamId: number; useLifeline: boolean }) => api.post(`/competitions/${id}/gameweeks/${gwId}/pick`, {
+      teamId,
+      entryId: selectedEntryId ?? undefined,
+      useLifeline,
+    }),
+    onSuccess: async () => {
+      setLifelineForGwId(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] }),
+        queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] }),
+      ]);
+    },
+  });
+
+  const currentGameweekQuery = useQuery({
+    queryKey: ['competition', id, 'current-gameweek'],
+    queryFn: async () => (await api.get<GameweekResponse>(`/competitions/${id}/gameweeks/current`)).data,
+    enabled: Number.isFinite(id),
+  });
+
+  const fixturesQuery = useQuery({
+    queryKey: ['competition', id, 'fixtures-all'],
+    queryFn: async () => {
+      return (await api.get<Fixture[]>(`/competitions/${id}/fixtures?weeks=99`)).data ?? [];
+    },
+    enabled: Number.isFinite(id),
+  });
+
+  const myPickQuery = useQuery({
+    queryKey: ['competition', id, 'my-pick', currentGameweekQuery.data?.id, selectedEntryId],
+    queryFn: async () => {
+      const currentGameweek = currentGameweekQuery.data;
+      if (!currentGameweek?.id) return null;
+      try {
+        return (await api.get<PickResponse>(`/competitions/${id}/gameweeks/${currentGameweek.id}/my-pick`, {
+          params: selectedEntryId ? { entryId: selectedEntryId } : undefined,
+        })).data;
+      } catch {
+        return null;
+      }
+    },
+    enabled: Number.isFinite(id) && !!currentGameweekQuery.data?.id && joined,
+  });
+
+  const pickStatsQuery = useQuery<PickStat[]>({
+    queryKey: ['competition', id, 'pick-stats', currentGameweekQuery.data?.id],
+    queryFn: async () => {
+      const currentGameweek = currentGameweekQuery.data;
+      if (!currentGameweek?.id) return [] as PickStat[];
+      return (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${currentGameweek.id}/pick-stats`)).data ?? [];
+    },
+    enabled: Number.isFinite(id),
+  });
+
+  const selectionsQuery = useQuery({
+    queryKey: ['competition', id, 'selections', currentGameweekQuery.data?.id],
+    queryFn: async () => {
+      const currentGameweek = currentGameweekQuery.data;
+      if (!currentGameweek?.id) return [] as Array<{ outcome?: string; useLifeline?: boolean }>;
+      const payload = (await api.get<{ selections?: Array<{ outcome?: string; useLifeline?: boolean }> }>(`/competitions/${id}/gameweeks/${currentGameweek.id}/selections`)).data;
+      return payload?.selections ?? [];
+    },
+    enabled: Number.isFinite(id),
+  });
+
+
+  const refreshing = competitionQuery.isRefetching || currentGameweekQuery.isRefetching || fixturesQuery.isRefetching || myPickQuery.isRefetching || myEntriesQuery.isRefetching || myStatusQuery.isRefetching || pickStatsQuery.isRefetching || selectionsQuery.isRefetching;
+
+  const onRefresh = async () => {
+    await Promise.all([
+      competitionQuery.refetch(),
+      myEntriesQuery.refetch(),
+      myStatusQuery.refetch(),
+      currentGameweekQuery.refetch(),
+      fixturesQuery.refetch(),
+      myPickQuery.refetch(),
+      pickStatsQuery.refetch(),
+      selectionsQuery.refetch(),
+    ]);
+  };
+
+  if (!Number.isFinite(id)) {
+    return <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}><Text style={styles.error}>Invalid competition id.</Text></SafeAreaView>;
+  }
+
+  const competition = competitionQuery.data;
+  const currentGameweek = currentGameweekQuery.data;
+  const fixtures = fixturesQuery.data;
+  const myPick = myPickQuery.data;
+  const selectedEntry = useMemo(() => myEntriesQuery.data?.find((e) => e.id === selectedEntryId) ?? null, [myEntriesQuery.data, selectedEntryId]);
+  const participant = myStatusQuery.data?.participant;
+  const isParticipant = Boolean(participant || joined);
+  const isEliminated = selectedEntry?.status === 'ELIMINATED' || participant?.status === 'ELIMINATED';
+  const isWinner = selectedEntry?.status === 'WINNER' || participant?.status === 'WINNER';
+  const selectedEntryNumber = participant?.entryNumber ?? selectedEntry?.entryNumber ?? null;
+  const selectedEntryLabel = (myEntriesQuery.data?.length ?? 0) > 1 && selectedEntryNumber ? `Entry #${selectedEntryNumber}` : null;
+  const awaitingPayment = selectedEntry?.paymentState === 'AWAITING_PAYMENT' || participant?.paymentState === 'AWAITING_PAYMENT';
+  const strictManualPayment = competition?.paymentMode === 'MANUAL' && competition?.manualPaymentPolicy !== 'LENIENT';
+  const canPick = Boolean(joined && currentGameweek?.status === 'UPCOMING' && !(awaitingPayment && strictManualPayment) && selectedEntry?.status === 'ACTIVE');
+  const effectiveActiveCount = competition?.activeCount ?? 0;
+  const eliminatedCount = Math.max((competition?.participantCount ?? 0) - effectiveActiveCount, 0);
+  const survivalRate = (competition?.participantCount ?? 0) > 0 ? Math.max(Math.round((effectiveActiveCount / (competition?.participantCount ?? 1)) * 100), effectiveActiveCount > 0 ? 1 : 0) : 0;
+
+  const pickHistory = (myStatusQuery.data?.picks ?? []).slice().sort((a, b) => b.weekNumber - a.weekNumber);
+  const myPickByGameweek = useMemo(() => {
+    const map = new Map<number, { teamId: number; teamName: string; teamShortName: string; locked: boolean; useLifeline?: boolean; outcome?: string }>();
+    for (const pick of myStatusQuery.data?.picks ?? []) map.set(pick.gameweekId, pick);
+    return map;
+  }, [myStatusQuery.data?.picks]);
+  const consumedTeamIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const pick of myStatusQuery.data?.picks ?? []) {
+      if (pick.locked || pick.outcome !== 'PENDING') ids.add(pick.teamId);
+    }
+    return ids;
+  }, [myStatusQuery.data?.picks]);
+  const lifelineStatusLabel = !competition?.lifelineEnabled
+    ? 'Lifeline disabled'
+    : !isParticipant
+      ? 'Lifeline enabled'
+      : participant?.lifelineUsed
+        ? `Lifeline used${participant.lifelineUsedWeek ? ` · GW ${participant.lifelineUsedWeek}` : ''}`
+        : 'Lifeline available';
+
+  const pickStats = pickStatsQuery.data ?? [];
+  const selections = selectionsQuery.data ?? [];
+  const mostBackedTeam = pickStats.length > 0 ? [...pickStats].sort((a, b) => b.pickCount - a.pickCount)[0] : null;
+  const weeklyEliminatedCount = selections.filter((selection) => {
+    const outcome = String(selection?.outcome ?? '').toUpperCase();
+    return outcome.includes('LOSS') || outcome.includes('ELIMINATED');
+  }).length;
+  const lifelinesPlayedThisWeek = selections.filter((selection) => Boolean(selection?.useLifeline)).length;
+  const weeklyPickedCount = selections.length || pickStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
+  const weeklyAdvancedCount = Math.max(weeklyPickedCount - weeklyEliminatedCount, 0);
+  const weeklySurvivalRate = weeklyPickedCount > 0 ? Math.round((weeklyAdvancedCount / weeklyPickedCount) * 100) : null;
+
+  const pulseTitle = competition?.status === 'COMPLETED' && competition.winnerUsername
+    ? `Winner: ${competition.winnerUsername}`
+    : isEliminated
+      ? `Your run ended in Gameweek ${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}`
+      : currentGameweek
+        ? `Gameweek ${currentGameweek.weekNumber} ${currentGameweek.status === 'IN_PROGRESS' ? 'is underway' : currentGameweek.status === 'COMPLETED' ? 'complete' : 'is next'}`
+        : 'Competition pressure is building';
+  const pulseBody = isEliminated
+    ? 'You are out of this competition now, but you can still follow every remaining fixture, upset, and survivor.'
+    : weeklySurvivalRate == null
+      ? 'Tracking this week as picks and results arrive.'
+      : `Current week survival is ${weeklySurvivalRate}% with ${weeklyAdvancedCount} advancing and ${weeklyEliminatedCount} out.`;
+
+  const gameweeks = useMemo(() => {
+    const map = new Map<number, { weekNumber: number; gameweekId: number; gameweekStatus: string; lockAt: string; fixtures: Fixture[] }>();
+    for (const fixture of fixtures ?? []) {
+      const fx = fixture as Fixture & { gameweekStatus?: string; gameweekLockAt?: string };
+      const existing = map.get(fixture.weekNumber);
+      if (existing) {
+        existing.fixtures.push(fixture);
+        if (!existing.lockAt && fx.gameweekLockAt) existing.lockAt = fx.gameweekLockAt;
+        if (existing.gameweekStatus === 'UPCOMING' && fx.gameweekStatus) existing.gameweekStatus = fx.gameweekStatus;
+      } else {
+        map.set(fixture.weekNumber, {
+          weekNumber: fixture.weekNumber,
+          gameweekId: fixture.gameweekId,
+          gameweekStatus: fx.gameweekStatus ?? 'UPCOMING',
+          lockAt: fx.gameweekLockAt ?? '',
+          fixtures: [fixture],
+        });
+      }
+    }
+
+    const ordered = [...map.values()].sort((a, b) => a.weekNumber - b.weekNumber);
+
+    // Match web behavior: fixtures sorted by kickoff ascending within week.
+    for (const gw of ordered) {
+      gw.fixtures.sort((a, b) => {
+        const da = parseDate(a.kickoffAt)?.getTime() ?? 0;
+        const db = parseDate(b.kickoffAt)?.getTime() ?? 0;
+        return da - db;
+      });
+
+      // Fallback derive week status from fixture statuses when backend week status missing.
+      if (!gw.gameweekStatus || gw.gameweekStatus === 'UPCOMING') {
+        const statuses = gw.fixtures.map((f) => f.status);
+        if (statuses.some((st) => st === 'IN_PLAY')) gw.gameweekStatus = 'IN_PROGRESS';
+        else if (statuses.every((st) => st === 'FINISHED' || st === 'POSTPONED' || st === 'CANCELLED')) gw.gameweekStatus = 'COMPLETED';
+      }
+    }
+
+    return ordered;
+  }, [fixtures]);
+
+  const pickStatsResults = useQueries({
+    queries: gameweeks
+      .filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt))
+      .map((gw) => ({
+        queryKey: ['competition', id, 'pick-stats', gw.gameweekId],
+        queryFn: async () => (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${gw.gameweekId}/pick-stats`)).data ?? [],
+        enabled: Number.isFinite(id),
+        staleTime: gw.gameweekStatus === 'COMPLETED' ? 300_000 : 60_000,
+      })),
+  });
+
+  const pickStatsByGameweek = useMemo(() => {
+    const lockedGameweeks = gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt));
+    const byGameweek = new Map<number, Map<string, PickStat>>();
+    lockedGameweeks.forEach((gw, index) => {
+      const rawStats = (pickStatsResults[index]?.data ?? []) as PickStat[];
+      const total = rawStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
+      const teamMap = new Map<string, PickStat>();
+      rawStats.forEach((stat) => {
+        const normalized = {
+          ...stat,
+          percentage: typeof stat.percentage === 'number'
+            ? stat.percentage
+            : total > 0
+            ? Math.round(((stat.pickCount ?? 0) / total) * 100)
+            : 0,
+        };
+        if (normalized.teamId != null) teamMap.set(`id:${normalized.teamId}`, normalized);
+        teamMap.set(`short:${normalized.teamShortName}`, normalized);
+        if (normalized.teamName) teamMap.set(`name:${normalized.teamName}`, normalized);
+      });
+      byGameweek.set(gw.gameweekId, teamMap);
+    });
+    return byGameweek;
+  }, [gameweeks, pickStatsResults]);
+
+  const getTeamPickStat = (gameweekId: number, teamId: number, teamShortName: string, teamName: string) => {
+    const teamMap = pickStatsByGameweek.get(gameweekId);
+    return teamMap?.get(`id:${teamId}`) ?? teamMap?.get(`short:${teamShortName}`) ?? teamMap?.get(`name:${teamName}`) ?? null;
+  };
+
+  useEffect(() => {
+    if (gameweeks.length === 0) return;
+    setCollapsedWeeks((prev) => {
+      if (prev.size > 0) return prev;
+      const next = new Set<number>();
+      const currentWeekNumber = currentGameweek?.weekNumber ?? gameweeks[gameweeks.length - 1].weekNumber;
+      for (const gw of gameweeks) {
+        if (gw.weekNumber !== currentWeekNumber) next.add(gw.weekNumber);
+      }
+      return next;
+    });
+  }, [gameweeks, currentGameweek?.weekNumber]);
+
+
+  const actionSummary = (() => {
+    if (!joined) return { title: 'Join this competition', detail: 'Create your entry to start making picks.', tone: 'brand' as const };
+    if (selectedEntry?.status === 'WINNER') return { title: 'You won this competition', detail: 'Your entry is marked as winner.', tone: 'success' as const };
+    if (selectedEntry?.status === 'ELIMINATED') return { title: 'Entry eliminated', detail: selectedEntry.eliminatedWeek ? `Eliminated in gameweek ${selectedEntry.eliminatedWeek}.` : 'This entry is out of the competition.', tone: 'danger' as const };
+    if (awaitingPayment && strictManualPayment) return { title: 'Awaiting payment confirmation', detail: 'Picks are disabled until club admin marks this entry as paid.', tone: 'warn' as const };
+    if (canPick) return { title: 'Pick required', detail: 'Your entry is active and ready for this gameweek pick.', tone: 'brand' as const };
+    return { title: 'Monitoring competition state', detail: 'Review gameweek status and fixture progress below.', tone: 'neutral' as const };
+  })();
+
+  const onShareInvite = async () => {
+    if (!competition) return;
+    const inviteText = competition.joinCode
+      ? `Join ${competition.name} on Last Man Standing with code: ${competition.joinCode}`
+      : `Join ${competition.name} on Last Man Standing.`;
+    try {
+      await Share.share({ message: inviteText });
+    } catch {}
+  };
+
+  const clubLogoUrl = (competition as Competition & { clubLogoUrl?: string | null })?.clubLogoUrl;
+  const clubName = (competition as Competition & { clubName?: string | null })?.clubName;
+  const actionBanner = actionSummary;
+
+  return (
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.brand} />}>
+        <View style={styles.heroWeb}>
+          {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.clubLogoMobile} /> : null}
+          <TouchableOpacity onPress={() => router.push('/competitions')} style={styles.lobbyLink}>
+            <Text style={styles.lobbyLinkText}>← Competition lobby</Text>
+          </TouchableOpacity>
+
+          <View style={styles.heroPillsRow}>
+            <StatusPill text={competition?.status ?? '—'} tone={statusTone(competition?.status)} />
+            {selectedEntryLabel ? <StatusPill text={selectedEntryLabel} tone="neutral" /> : null}
+            {isEliminated ? <StatusPill text="Eliminated" tone="danger" /> : null}
+            {isWinner ? <StatusPill text="Winner" tone="warn" /> : null}
+          </View>
+
+          <Text style={styles.webHeroTitle}>{competitionQuery.isLoading ? 'Loading competition...' : competition?.name ?? 'Competition'}</Text>
+          {competition?.description ? <Text style={styles.webHeroDescription}>{competition.description}</Text> : null}
+
+          <View style={styles.webMetricGrid}>
+            <View style={styles.webMetricCard}><Text style={styles.webMetricLabel}>Players</Text><Text style={styles.webMetricValue}>{competition?.participantCount ?? 0}</Text></View>
+            <View style={styles.webMetricCard}><Text style={styles.webMetricLabel}>Active</Text><Text style={styles.webMetricValue}>{effectiveActiveCount}</Text></View>
+            <View style={styles.webMetricCard}><Text style={styles.webMetricLabel}>Prize</Text><Text style={styles.webMetricValue}>{prizeLabel(competition)}</Text></View>
+          </View>
+
+          <View style={styles.heroMetaChips}>
+            <Text style={styles.heroMetaChip}>{actionSummary.title}</Text>
+            {currentGameweek?.lockAt ? <Text style={styles.heroMetaChip}>Next lock: {distanceToNow(currentGameweek.lockAt)}</Text> : null}
+            <Text style={[styles.heroMetaChip, competition?.lifelineEnabled ? styles.lifelineChipOn : null]}>{lifelineStatusLabel}</Text>
+          </View>
+
+          <View style={styles.heroActionsRow}>
+            {competition?.status === 'UPCOMING' ? (
+              <TouchableOpacity style={styles.inviteBtn} onPress={() => void onShareInvite()}>
+                <Text style={styles.inviteBtnText}>Invite</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={styles.survivorBtn} onPress={() => router.push(`/competitions/${id}/survivor-table`)}>
+              <Text style={styles.survivorBtnText}>Survivor Table</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.pulsePanel}>
+            <View style={styles.pulseEyebrowRow}>
+              {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.pulseLogo} /> : null}
+              <Text style={styles.pulseEyebrow}>{clubName ?? competition?.name ?? 'Competition'} Pulse</Text>
+              {currentGameweek?.weekNumber ? <Text style={styles.pulseLatest}>Latest: GW{currentGameweek.weekNumber}</Text> : null}
+            </View>
+            <Text style={styles.pulseHeadline}>{pulseTitle}</Text>
+            <Text style={styles.pulseCopy}>{pulseBody}</Text>
+            <View style={styles.webPulseChips}>
+              <Text style={styles.webPulseChip}>{eliminatedCount} eliminated</Text>
+              <Text style={styles.webPulseChip}>{survivalRate}% survival rate</Text>
+              {weeklySurvivalRate != null ? <Text style={styles.webPulseChip}>GW survival {weeklySurvivalRate}% · {weeklyAdvancedCount} adv · {weeklyEliminatedCount} out</Text> : null}
+              {mostBackedTeam ? <Text style={styles.webPulseChip}>Crowd pick: {mostBackedTeam.teamShortName} ({mostBackedTeam.pickCount})</Text> : null}
+            </View>
+          </View>
+
+          <View style={styles.spotlightGrid}>
+            <NarrativeTile eyebrow="Knockout pressure" title={competition?.status === 'UPCOMING' ? `${competition?.participantCount ?? 0} entered` : `${eliminatedCount} out, ${effectiveActiveCount} alive`} detail={competition?.status === 'UPCOMING' ? 'No eliminations yet. Knockout pressure begins when the first fixtures lock.' : `${survivalRate}% of the field is still standing.`} accent="warn" />
+            <NarrativeTile eyebrow={isEliminated ? 'Your run' : 'Your runway'} title={isEliminated ? `Eliminated in GW${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}` : `${Math.max(new Set((fixtures ?? []).flatMap((f) => [f.homeTeamId, f.awayTeamId])).size - consumedTeamIds.size, 0)} teams left to use`} detail={isEliminated ? 'There is no next pick for this entry, but you can still track the remaining survivors.' : `${consumedTeamIds.size} team${consumedTeamIds.size === 1 ? '' : 's'} already burned from your pool.`} accent="brand" />
+          </View>
+        </View>
+
+        <TouchableOpacity style={[styles.mobileToggle, mobileInsightsOpen ? styles.mobileToggleOpen : null]} onPress={() => setMobileInsightsOpen((v) => !v)}>
+          <View style={styles.mobileToggleCopy}>
+            <Text style={styles.mobileToggleKicker}>Panel</Text>
+            <Text style={styles.mobileToggleText}>Competition insights</Text>
+            <Text style={styles.mobileToggleMeta}>{mobileInsightsOpen ? 'Expanded' : 'Tap to show trend cards'}</Text>
+          </View>
+          <View style={[styles.mobileToggleChevronBox, mobileInsightsOpen ? styles.mobileToggleChevronBoxOpen : null]}><Text style={styles.mobileToggleState}>{mobileInsightsOpen ? '▲' : '▼'}</Text></View>
+        </TouchableOpacity>
+        {mobileInsightsOpen ? (
+          <View style={styles.insightStack}>
+            <InsightTile tone="brand" eyebrow="Crowd read" title={mostBackedTeam ? `${mostBackedTeam.teamShortName} drew the crowd` : 'Waiting for the first crowd signal'} detail={mostBackedTeam ? `${mostBackedTeam.pickCount} players backed ${mostBackedTeam.teamShortName} in the latest tracked week.` : 'Once a gameweek locks, this area highlights where the crowd moved together.'} />
+            <InsightTile tone="danger" eyebrow="Knockout blow" title={weeklyEliminatedCount > 0 ? `${weeklyEliminatedCount} new exits` : 'No major casualty yet'} detail="When fixtures resolve, this card highlights the biggest elimination source." />
+            <InsightTile tone="success" eyebrow="Contrarian edge" title="Waiting for a bold low-owned win" detail="If a low-owned choice breaks right, this is where that edge appears." />
+          </View>
+        ) : null}
+
+        <View style={styles.changedPanel}>
+          <Text style={styles.sectionEyebrow}>What Changed This Gameweek</Text>
+          <Text style={styles.changedTitle}>Latest gameweek snapshot</Text>
+          <View style={styles.snapshotTilesWeb}>
+            <SnapshotTile label="New eliminations" value={String(weeklyEliminatedCount)} tone="danger" />
+            <SnapshotTile label="Most picked" value={mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet'} />
+            <SnapshotTile label="Lifelines played" value={competition?.lifelineEnabled ? String(lifelinesPlayedThisWeek) : 'Lifeline off'} tone="warn" />
+            <SnapshotTile label="Entries remaining" value={String(effectiveActiveCount)} tone="success" />
+          </View>
+        </View>
+
+        <View style={[styles.stateBanner, actionBanner.tone === 'warn' ? styles.stateBannerWarn : actionBanner.tone === 'danger' ? styles.stateBannerDanger : actionBanner.tone === 'success' ? styles.stateBannerSuccess : styles.stateBannerBrand]}>
+          <Text style={styles.stateEyebrow}>{!joined && competition?.status === 'UPCOMING' ? 'Next Step' : actionBanner.tone === 'danger' ? 'Status' : 'Next Action'}</Text>
+          <Text style={styles.stateTitle}>{actionBanner.title}</Text>
+          <Text style={styles.stateCopy}>{actionBanner.detail}</Text>
+          {canJoinCompetition || canAddAnotherEntry ? (
+            <PrimaryButton label={joinMutation.isPending ? 'Working...' : joined ? 'Add another entry' : 'Join competition'} onPress={() => joinMutation.mutate()} disabled={joinMutation.isPending} />
+          ) : null}
+        </View>
+
+        {joined && (myEntriesQuery.data?.length ?? 0) > 1 ? (
+          <Card>
+            <SectionTitle>My Entries</SectionTitle>
+            <View style={styles.entryRow}>
+              {(myEntriesQuery.data ?? []).map((entry) => {
+                const active = selectedEntryId === entry.id;
+                return (
+                  <TouchableOpacity key={entry.id} style={[styles.entryChip, active ? styles.entryChipActive : null]} onPress={() => setSelectedEntryId(entry.id)}>
+                    <Text style={[styles.entryChipText, active ? styles.entryChipTextActive : null]}>Entry #{entry.entryNumber ?? 1}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Card>
+        ) : null}
+
+        <StatusActionsPanel
+          title={actionSummary.title}
+          statusLabel={actionSummary.title}
+          body={actionSummary.detail}
+          meta={currentGameweek?.lockAt ? `Next lock: ${distanceToNow(currentGameweek.lockAt)}` : null}
+          tone={actionSummary.tone}
+          onOpenSurvivor={() => router.push(`/competitions/${id}/survivor-table`)}
+        />
+
+        <TouchableOpacity style={[styles.mobileToggle, mobileRulesOpen ? styles.mobileToggleOpen : null]} onPress={() => setMobileRulesOpen((v) => !v)}>
+          <View style={styles.mobileToggleCopy}>
+            <Text style={styles.mobileToggleKicker}>Panel</Text>
+            <Text style={styles.mobileToggleText}>Rules & Status</Text>
+            <Text style={styles.mobileToggleMeta}>{mobileRulesOpen ? 'Expanded' : 'Tap to show rules and payment state'}</Text>
+          </View>
+          <View style={[styles.mobileToggleChevronBox, mobileRulesOpen ? styles.mobileToggleChevronBoxOpen : null]}><Text style={styles.mobileToggleState}>{mobileRulesOpen ? '▲' : '▼'}</Text></View>
+        </TouchableOpacity>
+        {mobileRulesOpen ? (
+          <View style={styles.rulesStatusCard}>
+            <View style={styles.rulesStatusHeader}>
+              <Text style={styles.rulesStatusTitle}>Rules & Status</Text>
+              <Text style={styles.rulesStatusSubtitle}>The competition contract, payment state, and team-pool picture in one panel.</Text>
+            </View>
+            <View style={styles.summaryGrid}>
+              <SummaryTile label="Entry" value={competition?.entryFee && competition.entryFee > 0 ? `€${competition.entryFee}` : 'Free'} detail={awaitingPayment && competition?.paymentMode === 'MANUAL' ? 'Awaiting organiser confirmation' : competition?.paymentMode === 'MANUAL' ? 'Pay organiser directly' : competition?.paymentMode === 'STRIPE' ? 'Paid online' : 'No payment required'} accent="brand" />
+              <SummaryTile label="Prize Pool" value={competition?.prizePool && competition.prizePool > 0 ? `€${competition.prizePool}` : 'TBD'} detail={competition?.prizePool && competition.prizePool > 0 ? 'Visible to all players' : 'No fixed amount set'} accent="warn" />
+              <SummaryTile label="Missed Pick" value={competition?.missedPickMode === 'ALLOW' ? 'Allowed' : 'Eliminate'} detail={competition?.missedPickMode === 'ALLOW' ? 'Competition allows misses' : 'No pick means you are out'} />
+              <SummaryTile label="Postponed Match" value={competition?.postponedConsumesTeam ? 'Counts as used' : 'Can be reused'} detail={competition?.postponedConsumesTeam ? 'That team is still burned' : 'The pick does not consume the team'} />
+              <SummaryTile label="Players" value={String(competition?.participantCount ?? 0)} detail={competition?.status === 'ACTIVE' ? `${effectiveActiveCount} still active` : competition?.winnerUsername ? `Winner: ${competition.winnerUsername}` : 'Registration overview'} />
+              <SummaryTile label="Lifeline" value={competition?.lifelineEnabled ? (participant?.lifelineUsed ? 'Used' : 'Available') : 'Disabled'} detail={competition?.lifelineEnabled ? 'Draw protection can be used once' : 'Standard rules apply'} accent={competition?.lifelineEnabled ? 'success' : undefined} />
+            </View>
+          </View>
+        ) : null}
+
+        {currentGameweek?.lockAt && !isPastDate(currentGameweek.lockAt) ? (
+          <View style={styles.lockPanel}>
+            <View>
+              <Text style={styles.lockTitle}>Next gameweek lock</Text>
+              <Text style={styles.lockSub}>{formatDateShort(currentGameweek.lockAt)}</Text>
+            </View>
+            <Text style={styles.lockCountdown}>{distanceToNow(currentGameweek.lockAt)}</Text>
+          </View>
+        ) : null}
+
+        <View style={styles.gameweeksSection}>
+          {fixturesQuery.isLoading ? <MetaText>Loading fixtures...</MetaText> : null}
+          {gameweeks.map((gw) => {
+            const collapsed = collapsedWeeks.has(gw.weekNumber);
+            const isLocked = gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt);
+            const isCompleted = gw.gameweekStatus === 'COMPLETED' || gw.fixtures.every((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED');
+            const myPickForGw = myPickByGameweek.get(gw.gameweekId);
+            return (
+              <View key={gw.weekNumber} style={[styles.webGameweekCard, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
+                <TouchableOpacity
+                  style={styles.webGameweekHeader}
+                  onPress={() => setCollapsedWeeks((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(gw.weekNumber)) next.delete(gw.weekNumber);
+                    else next.add(gw.weekNumber);
+                    return next;
+                  })}
+                >
+                  <View style={styles.webGameweekHeaderText}>
+                    <View style={styles.webGwTitleRow}>
+                      <Text style={styles.webGameweekTitle}>Gameweek {gw.weekNumber}</Text>
+                      <Text style={[styles.webGwBadge, isCompleted ? styles.webGwBadgeGray : isLocked ? styles.webGwBadgeRed : styles.webGwBadgeYellow]}>{isCompleted ? 'Completed' : isLocked ? 'Locked' : `Locks ${distanceToNow(gw.lockAt)}`}</Text>
+                    </View>
+                    {collapsed && myPickForGw ? <Text style={styles.webCollapsedPick}>Selected: <Text style={[styles.webCollapsedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text></Text> : null}
+                    {collapsed && !myPickForGw && isParticipant && !isEliminated && !isWinner && !isLocked ? <Text style={styles.noPickText}>No pick yet</Text> : null}
+                  </View>
+                  <View style={[styles.chevronBox, !collapsed ? styles.chevronBoxOpen : null]}><Text style={styles.chevron}>{collapsed ? '▼' : '▲'}</Text></View>
+                </TouchableOpacity>
+
+                {!collapsed && myPickForGw ? (
+                  <Text style={styles.webExpandedPick}>Your pick: <Text style={[styles.webExpandedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text>{myPickForGw.outcome && myPickForGw.outcome !== 'PENDING' ? ` · ${outcomeText(myPickForGw.outcome)}` : ''}</Text>
+                ) : null}
+
+                {!collapsed && isLocked ? (
+                  <View style={styles.mobileGameweekLinks}>
+                    <TouchableOpacity onPress={() => router.push(`/competitions/${id}/gameweeks/${gw.gameweekId}/selections`)}><Text style={styles.selectionLink}>View all selections →</Text></TouchableOpacity>
+                    {isCompleted ? <TouchableOpacity onPress={() => router.push(`/competitions/${id}/gameweeks/${gw.gameweekId}/results`)}><Text style={styles.resultsLink}>Results →</Text></TouchableOpacity> : null}
+                  </View>
+                ) : null}
+
+                {!collapsed ? (
+                  <View style={styles.fixturesStack}>
+                    {competition?.lifelineEnabled && isParticipant && !isWinner ? (
+                      <TouchableOpacity
+                        disabled={isLocked || gw.gameweekStatus !== 'UPCOMING' || participant?.lifelineUsed}
+                        onPress={() => setLifelineForGwId((value) => value === gw.gameweekId ? null : gw.gameweekId)}
+                        style={styles.lifelineBox}
+                      >
+                        <Text style={styles.lifelineBoxText}>{participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : `${lifelineForGwId === gw.gameweekId ? '✓ ' : ''}Use lifeline for this gameweek`}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek && gw.gameweekStatus !== 'COMPLETED' ? (
+                      <View style={styles.eliminatedBox}><Text style={styles.eliminatedBoxText}>{selectedEntryLabel ?? 'This entry'} was eliminated in Gameweek {participant.eliminatedWeek} and cannot make picks for this gameweek.</Text></View>
+                    ) : null}
+                    {gw.fixtures.map((f) => {
+                      const eliminatedBeforeThisGw = isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek;
+                      const canPickThisGw = isParticipant && !isEliminated && !isWinner && !(awaitingPayment && strictManualPayment) && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
+                      const homeIsMyPick = myPickForGw?.teamId === f.homeTeamId;
+                      const awayIsMyPick = myPickForGw?.teamId === f.awayTeamId;
+                      const homeUsed = consumedTeamIds.has(f.homeTeamId) && !homeIsMyPick;
+                      const awayUsed = consumedTeamIds.has(f.awayTeamId) && !awayIsMyPick;
+                      const homePickStat = getTeamPickStat(gw.gameweekId, f.homeTeamId, f.homeTeamShortName, f.homeTeamName);
+                      const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
+                      return (
+                        <View key={f.id} style={styles.webFixtureRow}>
+                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                          <FixtureCenter fixture={f} />
+                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
+          {gameweeks.length === 0 && !fixturesQuery.isLoading ? <MetaText>No fixtures available yet.</MetaText> : null}
+        </View>
+
+        {pickHistory.length > 0 ? (
+          <View style={styles.pickHistoryCard}>
+            <TouchableOpacity style={styles.historyHeader} onPress={() => setHistoryCollapsed((v) => !v)}>
+              <View>
+                <Text style={styles.historyHeading}>My Pick History</Text>
+                {selectedEntryLabel ? <Text style={styles.historyEntryLabel}>{selectedEntryLabel}</Text> : null}
+              </View>
+              <View style={[styles.chevronBox, !historyCollapsed ? styles.chevronBoxOpen : null]}><Text style={styles.chevron}>{historyCollapsed ? '▼' : '▲'}</Text></View>
+            </TouchableOpacity>
+            {!historyCollapsed ? (
+              <View style={styles.webPickHistoryList}>
+                {[...pickHistory].sort((a, b) => a.weekNumber - b.weekNumber).map((pick) => (
+                  <View key={pick.pickId} style={styles.webPickHistoryItem}>
+                    <View style={styles.webPickHistoryTopRow}>
+                      <View style={styles.webPickHistoryTeamBlock}>
+                        <Text style={styles.webPickGwLabel}>Gameweek {pick.weekNumber}</Text>
+                        <Text style={styles.webPickTeamShort}>{pick.teamShortName}</Text>
+                        <Text style={styles.webPickTeamName} numberOfLines={1}>{pick.teamName}</Text>
+                      </View>
+                      <StatusPill text={outcomeText(pick.outcome)} tone={outcomeTone(pick.outcome)} />
+                    </View>
+                    <View style={styles.webPickHistoryMetaRow}>
+                      <Text style={styles.webPickSourceText}>{pick.source === 'AUTO' ? 'Auto-picked' : 'Self-picked'}</Text>
+                      <View style={styles.webPickChipRow}>
+                        {pick.useLifeline ? <Text style={styles.lifelineHistoryChip}>Lifeline</Text> : null}
+                        <Text style={[styles.pickTypeChip, pick.source === 'AUTO' ? styles.pickTypeAuto : styles.pickTypeSelf]}>{pick.source === 'AUTO' ? 'Auto' : 'Self'}</Text>
+                      </View>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+
+function StatusActionsPanel({
+  title,
+  statusLabel,
+  body,
+  meta,
+  tone,
+  onOpenSurvivor,
+}: {
+  title: string;
+  statusLabel: string;
+  body: string;
+  meta?: string | null;
+  tone: 'neutral' | 'brand' | 'success' | 'danger' | 'warn';
+  onOpenSurvivor: () => void;
+}) {
+  return (
+    <View style={styles.statusActionsCard}>
+      <View style={styles.statusActionsHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.statusActionsEyebrow}>Next Action</Text>
+          <Text style={styles.statusActionsTitle}>Status & Actions</Text>
+          <Text style={styles.statusActionsStatus}>{statusLabel}</Text>
+        </View>
+        <Text style={[styles.statusActionsTone, tone === 'danger' ? styles.statusToneDanger : tone === 'warn' ? styles.statusToneWarn : tone === 'success' ? styles.statusToneSuccess : styles.statusToneBrand]}>{tone === 'danger' ? 'Urgent' : tone === 'warn' ? 'Attention' : tone === 'success' ? 'Ready' : 'Live'}</Text>
+      </View>
+      <Text style={styles.statusActionsBody}>{body}</Text>
+      {meta ? <Text style={styles.statusActionsMeta}>{meta}</Text> : null}
+      <TouchableOpacity onPress={onOpenSurvivor} style={styles.statusSecondaryButton}>
+        <Text style={styles.statusSecondaryButtonText}>Open survivor table</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function SummaryTile({ label, value, detail, accent }: { label: string; value: string; detail: string; accent?: 'brand' | 'warn' | 'success' }) {
+  return (
+    <View style={styles.summaryTile}>
+      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={[styles.summaryValue, accent === 'brand' ? styles.textBrand : accent === 'warn' ? styles.textWarn : accent === 'success' ? styles.textSuccess : null]}>{value}</Text>
+      <Text style={styles.summaryDetail}>{detail}</Text>
+    </View>
+  );
+}
+
+function NarrativeTile({ eyebrow, title, detail, accent }: { eyebrow: string; title: string; detail: string; accent: 'brand' | 'warn' }) {
+  return (
+    <View style={styles.narrativeTile}>
+      <Text style={styles.narrativeEyebrow}>{eyebrow}</Text>
+      <Text style={[styles.narrativeTitle, accent === 'warn' ? styles.narrativeWarn : styles.narrativeBrand]}>{title}</Text>
+      <Text style={styles.narrativeDetail}>{detail}</Text>
+    </View>
+  );
+}
+
+function InsightTile({ eyebrow, title, detail, tone }: { eyebrow: string; title: string; detail: string; tone: 'brand' | 'danger' | 'success' }) {
+  return (
+    <View style={[styles.insightTile, tone === 'danger' ? styles.insightDanger : tone === 'success' ? styles.insightSuccess : styles.insightBrand]}>
+      <Text style={styles.insightEyebrow}>{eyebrow}</Text>
+      <Text style={styles.insightTitle}>{title}</Text>
+      <Text style={styles.insightDetail}>{detail}</Text>
+    </View>
+  );
+}
+
+function SnapshotTile({ label, value, tone }: { label: string; value: string; tone?: 'danger' | 'warn' | 'success' }) {
+  return (
+    <View style={styles.snapshotTileWeb}>
+      <Text style={styles.snapshotLabelWeb}>{label}</Text>
+      <Text style={[styles.snapshotValueWeb, tone === 'danger' ? styles.textDanger : tone === 'warn' ? styles.textWarn : tone === 'success' ? styles.textSuccess : null]}>{value}</Text>
+    </View>
+  );
+}
+
+function FixtureCenter({ fixture }: { fixture: Fixture }) {
+  if (fixture.status === 'FINISHED') return <View style={styles.webCenterCol}><Text style={styles.scoreText}>{fixture.scoreHome} - {fixture.scoreAway}</Text></View>;
+  if (fixture.status === 'POSTPONED') return <View style={styles.webCenterCol}><Text style={styles.postponedText}>PP</Text></View>;
+  if (fixture.status === 'IN_PLAY') {
+    return <View style={styles.webCenterCol}><Text style={styles.scoreText}>{fixture.scoreHome != null && fixture.scoreAway != null ? `${fixture.scoreHome} - ${fixture.scoreAway}` : 'LIVE'}</Text><Text style={styles.liveText}>Live</Text></View>;
+  }
+  return <View style={styles.webCenterCol}><Text style={styles.kickDate}>{formatKickoffDate(fixture.kickoffAt)}</Text><Text style={styles.kickTime}>{formatKickoffTime(fixture.kickoffAt)}</Text></View>;
+}
+
+function TeamPickSide({ align, name, shortName, picked, used, pickStat, clickable, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; clickable: boolean; onPress: () => void }) {
+  return (
+    <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, clickable && !picked ? styles.webTeamClickable : null]}>
+      <View style={[styles.webTeamLine, align === 'right' ? styles.webTeamLineRight : null]}>
+        <Text style={[styles.webTeamShort, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : null]}>{shortName}</Text>
+        {(picked || used) ? <Text style={[styles.webTeamStatus, picked ? styles.webTeamPickedText : styles.webTeamUsedText]}>{picked ? 'Picked' : 'Used'}</Text> : null}
+      </View>
+      <Text style={[styles.webTeamName, align === 'right' ? styles.webTeamNameRight : null]} numberOfLines={1}>{name}</Text>
+      {pickStat ? (
+        <View style={[styles.webPickStatBadge, picked ? styles.webPickStatBadgePicked : null, align === 'right' ? styles.webPickStatBadgeRight : null]}>
+          <Text style={[styles.webPickStatText, picked ? styles.webPickStatTextPicked : null]}>{pickStat.percentage ?? 0}%</Text>
+          <Text style={[styles.webPickStatSubText, picked ? styles.webPickStatSubTextPicked : null]}>· {pickStat.pickCount} {pickStat.pickCount === 1 ? 'player' : 'players'}</Text>
+        </View>
+      ) : null}
+    </TouchableOpacity>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12 },
+  scrollContent: { paddingTop: 8, paddingBottom: 32, gap: 12 },
+  error: { color: '#fca5a5', marginTop: 8 },
+
+  heroWeb: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderTopWidth: 3,
+    borderColor: '#ffffff14',
+    borderTopColor: '#0ea5e966',
+    borderRadius: 30,
+    backgroundColor: '#0f172a',
+    padding: 18,
+    shadowColor: '#020617',
+    shadowOpacity: 0.48,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 18 },
+    elevation: 5,
+  },
+  clubLogoMobile: { position: 'absolute', right: 18, top: 18, width: 58, height: 58, borderRadius: 18, borderWidth: 1, borderColor: '#ffffff33' },
+  lobbyLink: { alignSelf: 'flex-start', marginBottom: 12 },
+  lobbyLinkText: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  heroPillsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingRight: 68 },
+  webHeroTitle: { color: '#fff', fontSize: 32, lineHeight: 37, fontWeight: '900', letterSpacing: -0.6, marginTop: 12 },
+  webHeroDescription: { color: '#cbd5e1', fontSize: 14, lineHeight: 22, marginTop: 8 },
+  webMetricGrid: { flexDirection: 'row', gap: 8, marginTop: 16 },
+  webMetricCard: { flex: 1, minHeight: 68, borderRadius: 18, borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#ffffff0a', padding: 10, justifyContent: 'center' },
+  webMetricLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1.2 },
+  webMetricValue: { color: '#f8fafc', fontSize: 21, fontWeight: '900', marginTop: 5 },
+  heroMetaChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 14 },
+  heroMetaChip: { overflow: 'hidden', borderRadius: 999, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#00000033', color: '#d1d5db', fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6 },
+  lifelineChipOn: { borderColor: '#22c55e55', backgroundColor: '#22c55e18', color: '#bbf7d0' },
+  heroActionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  inviteBtn: { borderWidth: 1, borderColor: '#ffffff33', backgroundColor: '#ffffff12', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  inviteBtnText: { color: '#f8fafc', fontSize: 12, fontWeight: '800' },
+  survivorBtn: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#38bdf818', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  survivorBtnText: { color: '#7dd3fc', fontSize: 12, fontWeight: '800' },
+
+  pulsePanel: { marginTop: 20, borderWidth: 1, borderLeftWidth: 3, borderLeftColor: '#0ea5e9', borderColor: '#ffffff1a', backgroundColor: '#ffffff0a', borderRadius: 24, padding: 15 },
+  pulseEyebrowRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 },
+  pulseLogo: { width: 22, height: 22, borderRadius: 7, borderWidth: 1, borderColor: '#ffffff33' },
+  pulseEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  pulseLatest: { color: '#fde68a', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1 },
+  pulseHeadline: { color: '#fff', fontSize: 24, lineHeight: 29, fontWeight: '900', letterSpacing: -0.3, marginTop: 12 },
+  pulseCopy: { color: '#cbd5e1', fontSize: 14, lineHeight: 22, marginTop: 8 },
+  webPulseChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 13 },
+  webPulseChip: { overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#00000026', borderRadius: 999, color: '#e5e7eb', fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6 },
+
+  spotlightGrid: { gap: 10, marginTop: 12 },
+  narrativeTile: { borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#ffffff0b', borderRadius: 22, padding: 14 },
+  narrativeEyebrow: { color: '#6b7280', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  narrativeTitle: { fontSize: 17, fontWeight: '900', marginTop: 7 },
+  narrativeWarn: { color: '#fde68a' },
+  narrativeBrand: { color: '#a5f3fc' },
+  narrativeDetail: { color: '#94a3b8', fontSize: 13, lineHeight: 20, marginTop: 7 },
+
+  mobileToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#26354d', backgroundColor: '#0b1324', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 12, gap: 12 },
+  mobileToggleOpen: { borderColor: '#0ea5e980', backgroundColor: '#0e1b2f' },
+  mobileToggleCopy: { flex: 1, minWidth: 0 },
+  mobileToggleKicker: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 3 },
+  mobileToggleText: { color: '#f8fafc', fontSize: 16, fontWeight: '900' },
+  mobileToggleMeta: { color: '#64748b', fontSize: 11, fontWeight: '700', marginTop: 3 },
+  mobileToggleChevronBox: { width: 32, height: 32, borderRadius: 11, borderWidth: 1, borderColor: '#334155', backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center' },
+  mobileToggleChevronBoxOpen: { borderColor: '#0ea5e966', backgroundColor: '#0ea5e922' },
+  mobileToggleState: { color: '#bae6fd', fontSize: 10, fontWeight: '900' },
+  insightStack: { gap: 10 },
+  insightTile: { borderWidth: 1, borderRadius: 22, padding: 15 },
+  insightBrand: { borderColor: '#0ea5e933', backgroundColor: '#0ea5e914' },
+  insightDanger: { borderColor: '#ef444433', backgroundColor: '#ef444414' },
+  insightSuccess: { borderColor: '#22c55e33', backgroundColor: '#22c55e14' },
+  insightEyebrow: { color: '#ffffff99', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  insightTitle: { color: '#fff', fontSize: 17, fontWeight: '900', marginTop: 8 },
+  insightDetail: { color: '#cbd5e1', fontSize: 13, lineHeight: 21, marginTop: 7 },
+
+  changedPanel: { borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 22, padding: 15 },
+  sectionEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  changedTitle: { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 5 },
+  snapshotTilesWeb: { gap: 8, marginTop: 12 },
+  snapshotTileWeb: { borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#00000026', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10 },
+  snapshotLabelWeb: { color: '#94a3b8', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
+  snapshotValueWeb: { color: '#fff', fontSize: 16, fontWeight: '900', marginTop: 5 },
+  textDanger: { color: '#fca5a5' },
+  textWarn: { color: '#fcd34d' },
+  textSuccess: { color: '#86efac' },
+  textBrand: { color: '#38bdf8' },
+
+  stateBanner: { borderWidth: 1, borderRadius: 22, padding: 15 },
+  stateBannerBrand: { borderColor: '#0ea5e955', backgroundColor: '#0ea5e918' },
+  stateBannerWarn: { borderColor: '#f59e0b66', backgroundColor: '#f59e0b18' },
+  stateBannerDanger: { borderColor: '#ef444466', backgroundColor: '#ef444418' },
+  stateBannerSuccess: { borderColor: '#22c55e66', backgroundColor: '#22c55e18' },
+  stateEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  stateTitle: { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 5 },
+  stateCopy: { color: '#d1d5db', fontSize: 13, lineHeight: 21, marginTop: 5 },
+
+  entryRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
+  entryChip: { borderRadius: 999, borderWidth: 1, borderColor: '#334155', backgroundColor: colors.panelSoft, paddingVertical: 6, paddingHorizontal: 10 },
+  entryChipActive: { borderColor: '#0ea5e9', backgroundColor: '#0ea5e922' },
+  entryChipText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600' },
+  entryChipTextActive: { color: '#7dd3fc' },
+
+  statusActionsCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 15 },
+  statusActionsHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  statusActionsEyebrow: { color: '#6b7280', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  statusActionsTitle: { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 7 },
+  statusActionsStatus: { color: '#94a3b8', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  statusActionsTone: { overflow: 'hidden', borderWidth: 1, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1 },
+  statusToneBrand: { borderColor: '#0ea5e955', backgroundColor: '#0ea5e922', color: '#7dd3fc' },
+  statusToneWarn: { borderColor: '#f59e0b55', backgroundColor: '#f59e0b22', color: '#fcd34d' },
+  statusToneDanger: { borderColor: '#ef444455', backgroundColor: '#ef444422', color: '#fca5a5' },
+  statusToneSuccess: { borderColor: '#22c55e55', backgroundColor: '#22c55e22', color: '#86efac' },
+  statusActionsBody: { color: '#d1d5db', fontSize: 13, lineHeight: 21, marginTop: 12 },
+  statusActionsMeta: { overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#00000022', borderRadius: 12, color: '#94a3b8', fontSize: 12, fontWeight: '700', marginTop: 12, paddingHorizontal: 10, paddingVertical: 9 },
+  statusSecondaryButton: { borderWidth: 1, borderColor: '#334155', backgroundColor: '#1f2937', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12, alignItems: 'center', marginTop: 12 },
+  statusSecondaryButtonText: { color: '#e5e7eb', fontSize: 13, fontWeight: '800' },
+
+  rulesStatusCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 15 },
+  rulesStatusHeader: { marginBottom: 12 },
+  rulesStatusTitle: { color: '#f3f4f6', fontSize: 18, fontWeight: '900' },
+  rulesStatusSubtitle: { color: '#94a3b8', fontSize: 12, lineHeight: 18, marginTop: 4 },
+  summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  summaryTile: { width: '48%', minHeight: 105, borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#ffffff0a', borderRadius: 16, padding: 10 },
+  summaryLabel: { color: '#6b7280', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
+  summaryValue: { color: '#f3f4f6', fontSize: 15, fontWeight: '900', marginTop: 6 },
+  summaryDetail: { color: '#94a3b8', fontSize: 11, lineHeight: 16, marginTop: 5 },
+
+  lockPanel: { borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#0ea5e918', borderRadius: 18, padding: 14, gap: 10 },
+  lockTitle: { color: '#38bdf8', fontSize: 13, fontWeight: '900' },
+  lockSub: { color: '#94a3b8', fontSize: 12, marginTop: 3 },
+  lockCountdown: { color: '#fff', fontSize: 25, fontWeight: '900' },
+
+  gameweeksSection: { gap: 12 },
+  webGameweekCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 14, overflow: 'hidden' },
+  webGameweekPicked: { borderColor: '#0ea5e966' },
+  webGameweekCompleted: { borderColor: '#37415166', opacity: 0.86 },
+  webGameweekHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  webGameweekHeaderText: { flex: 1 },
+  webGwTitleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  webGameweekTitle: { color: '#fff', fontSize: 18, fontWeight: '900' },
+  webGwBadge: { overflow: 'hidden', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
+  webGwBadgeGray: { color: '#d1d5db', backgroundColor: '#ffffff18' },
+  webGwBadgeRed: { color: '#fca5a5', backgroundColor: '#ef444422' },
+  webGwBadgeYellow: { color: '#fcd34d', backgroundColor: '#f59e0b22' },
+  webCollapsedPick: { color: '#94a3b8', fontSize: 12, marginTop: 5 },
+  webCollapsedPickTeam: { color: '#38bdf8', fontWeight: '900' },
+  webExpandedPick: { color: '#d1d5db', fontSize: 12, marginTop: -2, marginBottom: 8, paddingHorizontal: 2 },
+  webExpandedPickTeam: { fontWeight: '900' },
+  pickOutcomeAdvanced: { color: '#4ade80' },
+  pickOutcomeEliminated: { color: '#f87171' },
+  pickOutcomePostponed: { color: '#facc15' },
+  pickOutcomePending: { color: '#38bdf8' },
+  noPickText: { color: '#fcd34d', fontSize: 12, fontStyle: 'italic', marginTop: 5 },
+  chevronBox: { width: 32, height: 32, borderRadius: 11, borderWidth: 1, borderColor: '#334155', backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center' },
+  chevronBoxOpen: { borderColor: '#0ea5e966', backgroundColor: '#0ea5e922' },
+  chevron: { color: '#bae6fd', fontSize: 10, fontWeight: '900' },
+  mobileGameweekLinks: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 9 },
+  selectionLink: { color: '#38bdf8', fontSize: 12, fontWeight: '800' },
+  resultsLink: { color: '#4ade80', fontSize: 12, fontWeight: '900' },
+  fixturesStack: { gap: 8, marginTop: 14 },
+  lifelineBox: { borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 10, padding: 10 },
+  lifelineBoxText: { color: '#a5f3fc', fontSize: 12, fontWeight: '700' },
+  eliminatedBox: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422', borderRadius: 10, padding: 10 },
+  eliminatedBoxText: { color: '#fca5a5', fontSize: 12, fontWeight: '800' },
+  webFixtureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: '#1f293780', paddingHorizontal: 10, paddingVertical: 8 },
+  webTeamSide: { flex: 1, minHeight: 48, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 5, justifyContent: 'center' },
+  webTeamRight: { alignItems: 'flex-end' },
+  webTeamLeft: { alignItems: 'flex-start' },
+  webTeamClickable: { borderWidth: 1, borderColor: '#4b5563', backgroundColor: '#33415555' },
+  webTeamPicked: { borderWidth: 2, borderColor: '#7dd3fc', backgroundColor: '#0284c7dd' },
+  webTeamUsed: { backgroundColor: 'transparent' },
+  webTeamLine: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  webTeamLineRight: { flexDirection: 'row-reverse' },
+  webTeamShort: { color: '#e5e7eb', fontSize: 12, fontWeight: '900' },
+  webTeamName: { color: '#94a3b8', fontSize: 10, marginTop: 3, maxWidth: 110 },
+  webTeamNameRight: { textAlign: 'right' },
+  webTeamStatus: { overflow: 'hidden', borderRadius: 999, backgroundColor: '#ffffff22', paddingHorizontal: 5, paddingVertical: 2, fontSize: 8, fontWeight: '900', textTransform: 'uppercase' },
+  webPickStatBadge: { marginTop: 6, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', maxWidth: 112, borderRadius: 999, backgroundColor: '#ffffff14', paddingHorizontal: 6, paddingVertical: 3 },
+  webPickStatBadgeRight: { alignSelf: 'flex-end' },
+  webPickStatBadgePicked: { backgroundColor: '#ffffff26' },
+  webPickStatText: { color: '#d1d5db', fontSize: 9, fontWeight: '900' },
+  webPickStatTextPicked: { color: '#ffffff' },
+  webPickStatSubText: { color: '#94a3b8', fontSize: 9, fontWeight: '700' },
+  webPickStatSubTextPicked: { color: '#e5e7eb' },
+  webTeamPickedText: { color: '#fff' },
+  webTeamUsedText: { color: '#fcd34d', textDecorationLine: 'line-through' },
+  webCenterCol: { minWidth: 72, alignItems: 'center', justifyContent: 'center' },
+  scoreText: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  postponedText: { color: '#fcd34d', fontSize: 11, fontWeight: '900', textTransform: 'uppercase' },
+  liveText: { color: '#4ade80', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', marginTop: 2, letterSpacing: 1.0 },
+  kickDate: { color: '#94a3b8', fontSize: 10 },
+  kickTime: { color: '#cbd5e1', fontSize: 11, fontWeight: '700', marginTop: 1 },
+
+  pickHistoryCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 14 },
+  historyHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  historyHeading: { color: '#fff', fontSize: 20, fontWeight: '900' },
+  historyEntryLabel: { color: '#94a3b8', fontSize: 12, marginTop: 3 },
+  webPickHistoryList: { marginTop: 14, borderTopWidth: 1, borderTopColor: '#37415180' },
+  webPickHistoryItem: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#37415180', gap: 9 },
+  webPickHistoryTopRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+  webPickHistoryTeamBlock: { flex: 1, minWidth: 0 },
+  webPickGwLabel: { color: '#6b7280', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
+  webPickTeamShort: { color: '#f3f4f6', fontSize: 14, fontWeight: '900', marginTop: 5 },
+  webPickTeamName: { color: '#94a3b8', fontSize: 12, marginTop: 2 },
+  webPickHistoryMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  webPickSourceText: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
+  webPickChipRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  lifelineHistoryChip: { overflow: 'hidden', borderRadius: 999, backgroundColor: '#06b6d433', color: '#a5f3fc', fontSize: 10, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3 },
+  pickTypeChip: { overflow: 'hidden', borderRadius: 999, fontSize: 10, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3 },
+  pickTypeAuto: { backgroundColor: '#f59e0b22', color: '#fcd34d' },
+  pickTypeSelf: { backgroundColor: '#ffffff18', color: '#d1d5db' },
+});
