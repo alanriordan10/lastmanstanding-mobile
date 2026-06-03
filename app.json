@@ -21,7 +21,9 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.lastmanstanding.app",
+      "permissions": []
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -31,6 +33,12 @@
       "expo-secure-store",
       "@react-native-community/datetimepicker"
     ],
-    "scheme": "lastmanstanding"
+    "scheme": "lastmanstanding",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3e3a5137-9e9b-4612-b40c-5ce8d3a06b02"
+      }
+    }
   }
 }
