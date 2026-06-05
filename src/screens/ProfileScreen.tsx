@@ -10,6 +10,8 @@ import { Card, MetaText, PrimaryButton, ScreenTitle, SectionTitle, StatusPill } 
 import { colors, spacing } from '../theme/tokens';
 
 const isExpoGo = Constants.appOwnership === 'expo';
+const appVersion = Constants.expoConfig?.version ?? '1.0.0';
+const buildVersion = Constants.expoConfig?.android?.versionCode ? String(Constants.expoConfig.android.versionCode) : 'dev';
 
 async function getExpoPushTokenSafe(): Promise<string | null> {
   if (isExpoGo) return null;
@@ -189,6 +191,7 @@ export default function ProfileScreen() {
         <Card>
           <SectionTitle>Account</SectionTitle>
           <View style={styles.fieldRow}><MetaText>Role</MetaText><StatusPill text={user?.role ?? 'USER'} tone={user?.role === 'ADMIN' ? 'warn' : user?.role === 'CLUB_ADMIN' ? 'brand' : 'neutral'} /></View>
+          <View style={styles.fieldRow}><MetaText>App version</MetaText><Text style={styles.versionText}>v{appVersion} ({buildVersion})</Text></View>
           <View style={styles.fieldRow}><MetaText>Email reminders</MetaText><StatusPill text={emailOptIn ? 'ON' : 'OFF'} tone={emailOptIn ? 'success' : 'neutral'} /></View>
           <TouchableOpacity style={styles.toggleBtn} onPress={() => void onToggleEmailPref()} disabled={savingEmailPref}>
             <Text style={styles.toggleBtnText}>{savingEmailPref ? 'Saving...' : emailOptIn ? 'Turn Off Email Reminders' : 'Turn On Email Reminders'}</Text>
@@ -260,7 +263,8 @@ const styles = StyleSheet.create({
   avatarText: { color: '#062033', fontWeight: '900', fontSize: 20 },
   heroText: { flex: 1 },
   email: { color: '#94a3b8', marginTop: 4, fontSize: 12 },
-  fieldRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+  fieldRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, gap: 10 },
+  versionText: { color: '#cbd5e1', fontSize: 12, fontWeight: '800' },
   hint: { color: colors.textMuted, marginTop: 2, fontSize: 12, lineHeight: 18 },
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },
   flexOne: { flex: 1 },

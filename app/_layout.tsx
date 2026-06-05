@@ -1,10 +1,12 @@
 import { Stack } from 'expo-router';
 import { AppProviders } from '../src/providers/AppProviders';
 import { AppHeaderTitle } from '../src/components/AppHeaderTitle';
+import { AppErrorBoundary } from '../src/components/AppErrorBoundary';
 
 export default function RootLayout() {
   return (
-    <AppProviders>
+    <AppErrorBoundary>
+      <AppProviders>
       <Stack
         screenOptions={{
           headerStyle: {
@@ -31,6 +33,7 @@ export default function RootLayout() {
         <Stack.Screen name="competitions/[id]/gameweeks/[gwId]/selections" options={{ title: 'Gameweek Selections' }} />
         <Stack.Screen name="competitions/[id]/gameweeks/[gwId]/results" options={{ title: 'Gameweek Results' }} />
       </Stack>
-    </AppProviders>
+      </AppProviders>
+    </AppErrorBoundary>
   );
 }

@@ -7,6 +7,16 @@ type RefreshResponse = {
 };
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://10.0.2.2:8080';
+
+export function getApiErrorMessage(error: any, fallback = 'Request failed'): string {
+  if (error?.code === 'ECONNABORTED') {
+    return 'The request is taking longer than expected. Please try again in a moment.';
+  }
+  if (!error?.response) {
+    return 'Cannot reach the server. Check your connection or try again in a moment.';
+  }
+  return error.response?.data?.message || error.response?.data?.error || fallback;
+}
 let onAuthFailure: (() => void) | null = null;
 
 export function setAuthFailureHandler(handler: (() => void) | null) {

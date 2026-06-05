@@ -675,17 +675,17 @@ export default function ClubAdminScreen() {
                           <Text style={styles.webCompetitionMeta}>{c.participantCount} players ({c.activeCount} active)</Text>
                           {c.entryFee > 0 ? <Text style={styles.webCompetitionFee}>€{c.entryFee}</Text> : null}
                         </View>
-                        {c.visibility === 'PRIVATE' && c.joinCode ? (
-                          <View style={styles.inviteCodeBox}>
-                            <Text style={styles.inviteCodeLabel}>Invite code</Text>
-                            <Text style={styles.inviteCodeValue}>{c.joinCode}</Text>
-                          </View>
-                        ) : (
-                          <View style={styles.publicCodeBox}><Text style={styles.publicCodeText}>Public - no invite code required.</Text></View>
-                        )}
                       </View>
                     </View>
                   </TouchableOpacity>
+                  {c.visibility === 'PRIVATE' && c.joinCode ? (
+                    <View style={styles.inviteCodeBox}>
+                      <Text style={styles.inviteCodeLabel}>Invite code</Text>
+                      <Text selectable selectionColor="#38bdf8" style={styles.inviteCodeValue}>{c.joinCode}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.publicCodeBox}><Text style={styles.publicCodeText}>Public - no invite code required.</Text></View>
+                  )}
                   <View style={styles.webCompetitionActions}>
                     <TouchableOpacity style={[styles.webActionBtn, styles.copyInviteBtn]} onPress={() => Share.share({ message: c.joinCode ? `Join ${c.name} with invite code ${c.joinCode}` : `Join ${c.name} on Last Man Standing.` })}>
                       <Text style={styles.copyInviteText}>{c.joinCode ? 'Copy Invite' : 'Copy Public Link'}</Text>

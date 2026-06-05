@@ -24,17 +24,19 @@ function cellStyle(outcome?: string) {
 function outcomeLabel(outcome?: string) {
   const normalized = String(outcome ?? '').toUpperCase();
   if (normalized === 'ADVANCE' || normalized === 'WIN') return 'Advanced';
+  if (normalized === 'POSTPONED_ADVANCE') return 'Advanced (PP)';
   if (normalized === 'ELIMINATED' || normalized === 'LOSS') return 'Out';
-  if (normalized.includes('POSTPONED') || normalized === 'DRAW') return 'Postponed';
+  if (normalized === 'DRAW') return 'Draw';
+  if (normalized.includes('POSTPONED')) return 'Postponed';
   if (normalized === 'PENDING') return 'Pending';
   return normalized || 'Pending';
 }
 
 function outcomeSymbol(outcome?: string) {
-  const label = outcomeLabel(outcome);
-  if (label === 'Advanced') return '✓';
-  if (label === 'Out') return '✕';
-  if (label === 'Postponed') return '↷';
+  const normalized = String(outcome ?? '').toUpperCase();
+  if (normalized === 'ADVANCE' || normalized === 'WIN' || normalized === 'POSTPONED_ADVANCE') return '✓';
+  if (normalized === 'ELIMINATED' || normalized === 'LOSS') return '✕';
+  if (normalized.includes('POSTPONED') || normalized === 'DRAW') return '↷';
   return '';
 }
 
@@ -46,7 +48,7 @@ export default function SurvivorTableScreen() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [eliminatedWeekFilter, setEliminatedWeekFilter] = useState<'ALL' | number>('ALL');
-  const [mobileMode, setMobileMode] = useState<MobileMode>('compact');
+  const [mobileMode, setMobileMode] = useState<MobileMode>('table');
   const [page, setPage] = useState(1);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
@@ -305,7 +307,7 @@ function SurvivorLegend() {
     <View style={styles.legendCard}>
       <LegendItem label="Advanced" sample="Advanced" tone="success" />
       <LegendItem label="Eliminated" sample="Out" tone="danger" />
-      <LegendItem label="Postponed / Bye" sample="Postponed" tone="warn" />
+      <LegendItem label="Advanced by postponed / bye" sample="Advanced (PP)" tone="success" />
       <LegendItem label="Pending" sample="LIV" tone="neutral" />
       <View style={styles.legendItem}><Text style={styles.legendLock}>🔒</Text><Text style={styles.legendText}>Picks hidden (not yet locked)</Text></View>
       <View style={styles.legendItem}><Text style={styles.legendAuto}>auto</Text><Text style={styles.legendText}>Auto-picked</Text></View>

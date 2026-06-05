@@ -1,7 +1,7 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/AuthContext';
 import { api } from '../api/client';
@@ -40,6 +40,7 @@ type FixtureResultDraft = { status: string; scoreHome: string; scoreAway: string
 type AuditLog = { id?: number; username?: string | null; entityType?: string; entityId?: number | null; fieldName?: string | null; oldValue?: string | null; newValue?: string | null; action?: string; createdAt?: string | number[] | null };
 type OpStatus = { tone: 'success' | 'error' | 'info'; message: string } | null;
 type CompetitionFormErrors = { name?: string; startDate?: string };
+type OpStatusTone = 'success' | 'error' | 'info';
 type ClubFormErrors = { name?: string };
 type UserFormErrors = { email?: string; username?: string; password?: string };
 type PageResponse<T> = { content: T[]; totalElements: number; totalPages: number; number: number; size: number };
@@ -784,6 +785,41 @@ export default function AdminScreen() {
     setAuditDropdownOpen(null);
   };
 
+  const activeOperation = useMemo(() => {
+    const operations = [
+      { active: createCompetition.isPending, message: 'Creating competition...' },
+      { active: updateCompetition.isPending, message: 'Saving competition changes...' },
+      { active: bulkCreateCompetitions.isPending, message: 'Bulk creating competitions...' },
+      { active: bulkDeleteCompetitions.isPending, message: 'Deleting matching competitions...' },
+      { active: deleteCompetition.isPending, message: 'Deleting competition...' },
+      { active: syncCompetitionFixtures.isPending, message: 'Syncing competition fixtures...' },
+      { active: createClub.isPending, message: 'Creating club...' },
+      { active: assignClubAdmin.isPending, message: 'Assigning club admin...' },
+      { active: deleteClub.isPending, message: 'Deleting club...' },
+      { active: createUser.isPending, message: 'Creating user...' },
+      { active: toggleUserDisabled.isPending, message: 'Updating user status...' },
+      { active: changeUserRole.isPending, message: 'Updating user role...' },
+      { active: deleteUser.isPending, message: 'Deleting user...' },
+      { active: syncAllFixtures.isPending, message: 'Syncing fixtures...' },
+      { active: clearFixtureCache.isPending, message: 'Clearing fixture cache...' },
+      { active: simulateResult.isPending, message: 'Processing gameweek results and eliminations...' },
+      { active: bulkSimulateResult.isPending, message: 'Randomising fixtures and processing gameweek results...' },
+      { active: generateTestData.isPending, message: `Generating ${testDataUserCount || '0'} test users and seeded picks...` },
+      { active: cleanupTestData.isPending, message: 'Deleting test users and related data...' },
+      { active: auditQuery.isFetching, message: 'Loading audit trail...' },
+    ];
+    return operations.find((operation) => operation.active) ?? null;
+  }, [
+    createCompetition.isPending, updateCompetition.isPending, bulkCreateCompetitions.isPending,
+    bulkDeleteCompetitions.isPending, deleteCompetition.isPending, syncCompetitionFixtures.isPending,
+    createClub.isPending, assignClubAdmin.isPending, deleteClub.isPending, createUser.isPending,
+    toggleUserDisabled.isPending, changeUserRole.isPending, deleteUser.isPending, syncAllFixtures.isPending,
+    clearFixtureCache.isPending, simulateResult.isPending, bulkSimulateResult.isPending,
+    generateTestData.isPending, cleanupTestData.isPending, auditQuery.isFetching, testDataUserCount,
+  ]);
+  const visibleStatus = activeOperation ? { tone: 'info' as const, message: activeOperation.message } : opStatus;
+  const operationInProgress = Boolean(activeOperation);
+
   if (!isAdmin) {
     return (
       <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
@@ -815,11 +851,11 @@ export default function AdminScreen() {
 
         <View style={styles.statusPanel}>
           <View style={styles.statusLeft}>
-            <View style={[styles.statusDot, opStatus?.tone === 'error' ? styles.statusDotError : opStatus?.tone === 'info' ? styles.statusDotInfo : styles.statusDotOk]} />
-            <Text style={styles.statusLabel}>Status</Text>
-            <Text style={styles.statusMessage} numberOfLines={2}>{opStatus?.message ?? 'All systems nominal'}</Text>
+            {operationInProgress ? <ActivityIndicator size="small" color="#38bdf8" /> : <View style={[styles.statusDot, visibleStatus?.tone === 'error' ? styles.statusDotError : visibleStatus?.tone === 'info' ? styles.statusDotInfo : styles.statusDotOk]} />}
+            <Text style={styles.statusLabel}>{operationInProgress ? 'Working' : 'Status'}</Text>
+            <Text style={styles.statusMessage} numberOfLines={2}>{visibleStatus?.message ?? 'All systems nominal'}</Text>
           </View>
-          <Text style={styles.statusHelper}>Admin tooling is ready for operations.</Text>
+          <Text style={styles.statusHelper}>{operationInProgress ? 'Keep this screen open until the operation completes.' : 'Admin tooling is ready for operations.'}</Text>
         </View>
 
         <View style={styles.sectionSelectorBlock}>
@@ -897,7 +933,7 @@ export default function AdminScreen() {
                         <Text style={styles.adminCompetitionName} numberOfLines={1}>{c.name}</Text>
                         <Text style={styles.adminCompetitionDate}>{c.startDate ?? 'No start date'}</Text>
                         {c.visibility === 'PRIVATE' && c.joinCode ? (
-                          <View style={styles.adminJoinCodePill}><Text style={styles.adminJoinCodeText}>{c.joinCode}</Text></View>
+                          <View style={styles.adminJoinCodePill}><Text style={styles.adminJoinCodeLabel}>Invite code</Text><Text selectable selectionColor="#38bdf8" style={styles.adminJoinCodeText}>{c.joinCode}</Text></View>
                         ) : null}
                       </View>
                       <StatusPill text={c.status} tone={c.status === 'ACTIVE' ? 'success' : c.status === 'UPCOMING' ? 'brand' : 'neutral'} />
@@ -1055,6 +1091,7 @@ export default function AdminScreen() {
 
         {tab === 'simulate' && (
           <View style={styles.simulateRoot}>
+            {(simulateResult.isPending || bulkSimulateResult.isPending) ? <AdminActionNotice tone="info" title="Processing simulation" message={activeOperation?.message ?? 'Processing gameweek results...'} busy /> : null}
             <View style={styles.simulateIntro}>
               <Text style={styles.sectionEyebrow}>Scenario testing</Text>
               <Text style={styles.sectionHeading}>Simulate Gameweek Results</Text>
@@ -1200,6 +1237,7 @@ export default function AdminScreen() {
 
         {tab === 'testdata' && (
           <View style={styles.testDataRoot}>
+            {(generateTestData.isPending || cleanupTestData.isPending) ? <AdminActionNotice tone="info" title={generateTestData.isPending ? 'Generating test data' : 'Cleaning up test data'} message={activeOperation?.message ?? 'Working on test data...'} busy /> : null}
             <View style={styles.testDataIntro}>
               <Text style={styles.sectionHeading}>Generate Test Data</Text>
               <Text style={styles.sectionDescription}>Create hundreds of test users to test UI scaling and performance.</Text>
@@ -1358,6 +1396,29 @@ export default function AdminScreen() {
           </View>
         )}
       </ScrollView>
+
+      {(operationInProgress || opStatus) ? (
+        <View style={styles.operationToast}>
+          {operationInProgress ? (
+            <AdminActionNotice
+              tone={visibleStatus?.tone ?? 'info'}
+              title="Action in progress"
+              message={visibleStatus?.message ?? 'Working...'}
+              busy
+              compact
+            />
+          ) : (
+            <TouchableOpacity activeOpacity={0.9} onPress={() => setOpStatus(null)}>
+              <AdminActionNotice
+                tone={visibleStatus?.tone ?? 'info'}
+                title={visibleStatus?.tone === 'error' ? 'Action failed' : 'Action complete'}
+                message={`${visibleStatus?.message ?? 'Done.'} Tap to dismiss.`}
+                compact
+              />
+            </TouchableOpacity>
+          )}
+        </View>
+      ) : null}
 
       <Modal visible={confirmDialog !== null} animationType="fade" transparent onRequestClose={() => setConfirmDialog(null)}>
         <View style={styles.confirmBackdrop}>
@@ -1728,6 +1789,24 @@ function formatParticipantDate(value?: string) {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
 }
 
+function AdminActionNotice({ tone, title, message, busy = false, compact = false }: { tone: OpStatusTone; title: string; message: string; busy?: boolean; compact?: boolean }) {
+  return (
+    <View style={[
+      styles.actionNotice,
+      tone === 'success' ? styles.actionNoticeSuccess : tone === 'error' ? styles.actionNoticeError : styles.actionNoticeInfo,
+      compact ? styles.actionNoticeCompact : null,
+    ]}>
+      <View style={styles.actionNoticeIcon}>
+        {busy ? <ActivityIndicator size="small" color="#bae6fd" /> : <Text style={styles.actionNoticeIconText}>{tone === 'success' ? '✓' : tone === 'error' ? '!' : 'i'}</Text>}
+      </View>
+      <View style={styles.actionNoticeCopy}>
+        <Text style={styles.actionNoticeTitle}>{title}</Text>
+        <Text style={styles.actionNoticeMessage}>{message}</Text>
+      </View>
+    </View>
+  );
+}
+
 function AdminParticipantsPanel({
   competition,
   setConfirmDialog,
@@ -1920,6 +1999,17 @@ const styles = StyleSheet.create({
   statusLabel: { color: '#e5e7eb', fontSize: 12, fontWeight: '900' },
   statusMessage: { color: '#9ca3af', fontSize: 12, flexShrink: 1 },
   statusHelper: { color: '#64748b', fontSize: 11 },
+  operationToast: { position: 'absolute', left: 10, right: 10, bottom: 10, zIndex: 30 },
+  actionNotice: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1, borderRadius: 16, padding: 12, shadowColor: '#020617', shadowOpacity: 0.42, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 8 },
+  actionNoticeCompact: { padding: 10 },
+  actionNoticeInfo: { borderColor: '#38bdf855', backgroundColor: '#0f2438f2' },
+  actionNoticeSuccess: { borderColor: '#22c55e55', backgroundColor: '#10291df2' },
+  actionNoticeError: { borderColor: '#ef444455', backgroundColor: '#2b1218f2' },
+  actionNoticeIcon: { width: 28, height: 28, borderRadius: 999, borderWidth: 1, borderColor: '#ffffff26', backgroundColor: '#ffffff12', alignItems: 'center', justifyContent: 'center' },
+  actionNoticeIconText: { color: '#f8fafc', fontSize: 13, fontWeight: '900' },
+  actionNoticeCopy: { flex: 1, minWidth: 0 },
+  actionNoticeTitle: { color: '#f8fafc', fontSize: 12, fontWeight: '900' },
+  actionNoticeMessage: { color: '#cbd5e1', fontSize: 11, lineHeight: 16, marginTop: 2 },
 
   sectionSelectorBlock: { marginBottom: 12 },
   selectorLabel: { color: '#64748b', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 7 },
@@ -1955,7 +2045,8 @@ const styles = StyleSheet.create({
   adminCompetitionTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
   adminCompetitionName: { color: '#f8fafc', fontSize: 15, fontWeight: '900' },
   adminCompetitionDate: { color: '#94a3b8', fontSize: 11, marginTop: 3 },
-  adminJoinCodePill: { alignSelf: 'flex-start', marginTop: 6, borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#0ea5e91a', borderRadius: 7, paddingHorizontal: 8, paddingVertical: 3 },
+  adminJoinCodePill: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#0ea5e91a', borderRadius: 7, paddingHorizontal: 8, paddingVertical: 3 },
+  adminJoinCodeLabel: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
   adminJoinCodeText: { color: '#bae6fd', fontFamily: 'monospace', fontSize: 11, fontWeight: '900', letterSpacing: 1.2 },
   adminCompetitionMetaRow: { flexDirection: 'row', gap: 14, flexWrap: 'wrap' },
   adminCompetitionMeta: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },

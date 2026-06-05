@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "lastmanstanding-mobile",
+    "name": "Last Man Standing",
     "slug": "lastmanstanding-mobile",
-    "version": "1.0.0",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -23,7 +23,10 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.lastmanstanding.app",
-      "permissions": []
+      "permissions": [],
+      "versionCode": 4,
+      "playStoreUrl": "",
+      "blockedPermissions": []
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -31,7 +34,8 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "@stripe/stripe-react-native"
     ],
     "scheme": "lastmanstanding",
     "extra": {
@@ -39,6 +43,11 @@
       "eas": {
         "projectId": "3e3a5137-9e9b-4612-b40c-5ce8d3a06b02"
       }
-    }
+    },
+    "description": "Run and play Last Man Standing football survivor competitions.",
+    "privacy": "public",
+    "owner": "alanriordan",
+    "primaryColor": "#0ea5e9",
+    "githubUrl": "https://github.com/alan/lastmanstanding-mobile"
   }
 }

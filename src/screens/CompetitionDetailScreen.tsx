@@ -3,10 +3,20 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
-import type { Competition, Fixture, GameweekResponse, MyStatusResponse, Participant, PickResponse } from '../types';
+import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickResponse } from '../types';
 import { useEffect, useMemo, useState } from 'react';
 import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
 import { colors, spacing } from '../theme/tokens';
+
+type PaymentConfigResponse = {
+  publishableKey?: string | null;
+};
+
+type PaymentIntentResponse = {
+  clientSecret: string;
+  paymentIntentId: string;
+  amountCents: number;
+};
 
 type PickStat = {
   teamId?: number;
@@ -118,7 +128,11 @@ export default function CompetitionDetailScreen() {
   const [mobileInsightsOpen, setMobileInsightsOpen] = useState(false);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [lifelineForGwId, setLifelineForGwId] = useState<number | null>(null);
+  const [optimisticPick, setOptimisticPick] = useState<{ gwId: number; teamId: number; teamName: string; teamShortName: string } | null>(null);
   const [mobileRulesOpen, setMobileRulesOpen] = useState(false);
+  const [paymentActionError, setPaymentActionError] = useState<string | null>(null);
+  const [paymentActionSuccess, setPaymentActionSuccess] = useState<string | null>(null);
+  const [paymentInProgress, setPaymentInProgress] = useState(false);
 
   const competitionQuery = useQuery({
     queryKey: ['competition', id],
@@ -140,6 +154,10 @@ export default function CompetitionDetailScreen() {
     if (selectedEntryId && myEntriesQuery.data.some((e) => e.id === selectedEntryId)) return;
     setSelectedEntryId(myEntriesQuery.data[0].id);
   }, [myEntriesQuery.data, selectedEntryId]);
+
+  useEffect(() => {
+    setOptimisticPick(null);
+  }, [selectedEntryId]);
 
   const joined = (myEntriesQuery.data?.length ?? 0) > 0;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
@@ -163,17 +181,35 @@ export default function CompetitionDetailScreen() {
 
 
   const pickMutation = useMutation({
-    mutationFn: async ({ gwId, teamId, useLifeline }: { gwId: number; teamId: number; useLifeline: boolean }) => api.post(`/competitions/${id}/gameweeks/${gwId}/pick`, {
+    mutationFn: async ({ gwId, teamId, useLifeline }: { gwId: number; teamId: number; teamName: string; teamShortName: string; useLifeline: boolean }) => api.post(`/competitions/${id}/gameweeks/${gwId}/pick`, {
       teamId,
       entryId: selectedEntryId ?? undefined,
       useLifeline,
     }),
-    onSuccess: async () => {
+    onMutate: ({ gwId, teamId, teamName, teamShortName }) => {
+      setOptimisticPick({ gwId, teamId, teamName, teamShortName });
+      const queryKey = ['competition', id, 'my-status', selectedEntryId] as const;
+      const previous = queryClient.getQueryData<MyStatusResponse>(queryKey);
+      queryClient.setQueryData<MyStatusResponse>(queryKey, (current) => {
+        if (!current) return current;
+        const nextUsed = new Set(current.usedTeamIds ?? []);
+        const previousPick = current.picks.find((pick) => pick.gameweekId === gwId);
+        if (previousPick) nextUsed.delete(previousPick.teamId);
+        nextUsed.add(teamId);
+        return { ...current, usedTeamIds: Array.from(nextUsed) };
+      });
+      return { queryKey, previous };
+    },
+    onSuccess: () => {
       setLifelineForGwId(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] }),
-        queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] }),
-      ]);
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] });
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] });
+    },
+    onError: (_error, _vars, context) => {
+      setOptimisticPick(null);
+      if (context?.previous) {
+        queryClient.setQueryData(context.queryKey, context.previous);
+      }
     },
   });
 
@@ -241,6 +277,8 @@ export default function CompetitionDetailScreen() {
       myPickQuery.refetch(),
       pickStatsQuery.refetch(),
       selectionsQuery.refetch(),
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'pick-stats'] }),
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'selections'] }),
     ]);
   };
 
@@ -260,11 +298,12 @@ export default function CompetitionDetailScreen() {
   const selectedEntryNumber = participant?.entryNumber ?? selectedEntry?.entryNumber ?? null;
   const selectedEntryLabel = (myEntriesQuery.data?.length ?? 0) > 1 && selectedEntryNumber ? `Entry #${selectedEntryNumber}` : null;
   const awaitingPayment = selectedEntry?.paymentState === 'AWAITING_PAYMENT' || participant?.paymentState === 'AWAITING_PAYMENT';
+  const onlinePaymentRequired = Boolean(competition?.paymentMode === 'STRIPE' && (competition?.entryFee ?? 0) > 0);
+  const awaitingOnlinePayment = Boolean(awaitingPayment && competition?.paymentMode === 'STRIPE');
   const strictManualPayment = competition?.paymentMode === 'MANUAL' && competition?.manualPaymentPolicy !== 'LENIENT';
-  const canPick = Boolean(joined && currentGameweek?.status === 'UPCOMING' && !(awaitingPayment && strictManualPayment) && selectedEntry?.status === 'ACTIVE');
-  const effectiveActiveCount = competition?.activeCount ?? 0;
-  const eliminatedCount = Math.max((competition?.participantCount ?? 0) - effectiveActiveCount, 0);
-  const survivalRate = (competition?.participantCount ?? 0) > 0 ? Math.max(Math.round((effectiveActiveCount / (competition?.participantCount ?? 1)) * 100), effectiveActiveCount > 0 ? 1 : 0) : 0;
+  const paymentBlocksPicks = awaitingOnlinePayment || (awaitingPayment && strictManualPayment);
+  const canPick = Boolean(joined && currentGameweek?.status === 'UPCOMING' && !paymentBlocksPicks && selectedEntry?.status === 'ACTIVE');
+  const participantCount = competition?.participantCount ?? 0;
 
   const pickHistory = (myStatusQuery.data?.picks ?? []).slice().sort((a, b) => b.weekNumber - a.weekNumber);
   const myPickByGameweek = useMemo(() => {
@@ -273,12 +312,12 @@ export default function CompetitionDetailScreen() {
     return map;
   }, [myStatusQuery.data?.picks]);
   const consumedTeamIds = useMemo(() => {
-    const ids = new Set<number>();
+    const ids = new Set<number>(myStatusQuery.data?.usedTeamIds ?? []);
     for (const pick of myStatusQuery.data?.picks ?? []) {
       if (pick.locked || pick.outcome !== 'PENDING') ids.add(pick.teamId);
     }
     return ids;
-  }, [myStatusQuery.data?.picks]);
+  }, [myStatusQuery.data?.picks, myStatusQuery.data?.usedTeamIds]);
   const lifelineStatusLabel = !competition?.lifelineEnabled
     ? 'Lifeline disabled'
     : !isParticipant
@@ -286,31 +325,6 @@ export default function CompetitionDetailScreen() {
       : participant?.lifelineUsed
         ? `Lifeline used${participant.lifelineUsedWeek ? ` · GW ${participant.lifelineUsedWeek}` : ''}`
         : 'Lifeline available';
-
-  const pickStats = pickStatsQuery.data ?? [];
-  const selections = selectionsQuery.data ?? [];
-  const mostBackedTeam = pickStats.length > 0 ? [...pickStats].sort((a, b) => b.pickCount - a.pickCount)[0] : null;
-  const weeklyEliminatedCount = selections.filter((selection) => {
-    const outcome = String(selection?.outcome ?? '').toUpperCase();
-    return outcome.includes('LOSS') || outcome.includes('ELIMINATED');
-  }).length;
-  const lifelinesPlayedThisWeek = selections.filter((selection) => Boolean(selection?.useLifeline)).length;
-  const weeklyPickedCount = selections.length || pickStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
-  const weeklyAdvancedCount = Math.max(weeklyPickedCount - weeklyEliminatedCount, 0);
-  const weeklySurvivalRate = weeklyPickedCount > 0 ? Math.round((weeklyAdvancedCount / weeklyPickedCount) * 100) : null;
-
-  const pulseTitle = competition?.status === 'COMPLETED' && competition.winnerUsername
-    ? `Winner: ${competition.winnerUsername}`
-    : isEliminated
-      ? `Your run ended in Gameweek ${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}`
-      : currentGameweek
-        ? `Gameweek ${currentGameweek.weekNumber} ${currentGameweek.status === 'IN_PROGRESS' ? 'is underway' : currentGameweek.status === 'COMPLETED' ? 'complete' : 'is next'}`
-        : 'Competition pressure is building';
-  const pulseBody = isEliminated
-    ? 'You are out of this competition now, but you can still follow every remaining fixture, upset, and survivor.'
-    : weeklySurvivalRate == null
-      ? 'Tracking this week as picks and results arrive.'
-      : `Current week survival is ${weeklySurvivalRate}% with ${weeklyAdvancedCount} advancing and ${weeklyEliminatedCount} out.`;
 
   const gameweeks = useMemo(() => {
     const map = new Map<number, { weekNumber: number; gameweekId: number; gameweekStatus: string; lockAt: string; fixtures: Fixture[] }>();
@@ -360,7 +374,7 @@ export default function CompetitionDetailScreen() {
         queryKey: ['competition', id, 'pick-stats', gw.gameweekId],
         queryFn: async () => (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${gw.gameweekId}/pick-stats`)).data ?? [],
         enabled: Number.isFinite(id),
-        staleTime: gw.gameweekStatus === 'COMPLETED' ? 300_000 : 60_000,
+        staleTime: 0,
       })),
   });
 
@@ -388,6 +402,166 @@ export default function CompetitionDetailScreen() {
     });
     return byGameweek;
   }, [gameweeks, pickStatsResults]);
+  const selectionResults = useQueries({
+    queries: gameweeks
+      .filter((gw) => gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED')
+      .map((gw) => ({
+        queryKey: ['competition', id, 'selections', gw.gameweekId],
+        queryFn: async () => {
+          const res = await api.get<GameweekSelectionsData | GameweekSelectionsData['selections']>(`/competitions/${id}/gameweeks/${gw.gameweekId}/selections`);
+          return Array.isArray(res.data) ? { selections: res.data, byeGranted: false, weekNumber: gw.weekNumber } as GameweekSelectionsData : res.data;
+        },
+        enabled: Number.isFinite(id),
+        staleTime: 0,
+      })),
+  });
+
+  const selectionsByGameweek = useMemo(() => {
+    const resolvedGameweeks = gameweeks.filter((gw) => gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED');
+    const byGameweek = new Map<number, GameweekSelectionsData>();
+    resolvedGameweeks.forEach((gw, index) => {
+      const data = selectionResults[index]?.data as GameweekSelectionsData | undefined;
+      if (data) byGameweek.set(gw.gameweekId, data);
+    });
+    return byGameweek;
+  }, [gameweeks, selectionResults]);
+
+  const latestNarrativeWeek = useMemo(() => {
+    return [...gameweeks]
+      .reverse()
+      .find((gw) =>
+        (gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED')
+        && gw.fixtures.some((fixture) => fixture.status === 'FINISHED' || fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED')
+      ) ?? [...gameweeks].reverse().find((gw) => gw.gameweekStatus === 'COMPLETED') ?? null;
+  }, [gameweeks]);
+
+  const latestNarrativeTeamIds = useMemo(() => {
+    const ids = new Set<number>();
+    latestNarrativeWeek?.fixtures.forEach((fixture) => {
+      ids.add(fixture.homeTeamId);
+      ids.add(fixture.awayTeamId);
+    });
+    return ids;
+  }, [latestNarrativeWeek]);
+
+  const latestNarrativeStats = latestNarrativeWeek
+    ? [...(pickStatsByGameweek.get(latestNarrativeWeek.gameweekId)?.values() ?? [])]
+        .filter((stat, index, arr) => stat.teamId != null && latestNarrativeTeamIds.has(stat.teamId) && arr.findIndex((other) => other.teamId === stat.teamId) === index)
+        .sort((a, b) => b.pickCount - a.pickCount)
+    : [];
+
+  const latestSelectionsData = latestNarrativeWeek ? selectionsByGameweek.get(latestNarrativeWeek.gameweekId) : undefined;
+  const latestSelections = latestSelectionsData?.selections ?? [];
+  const resolvedSelections = latestSelections.filter((selection) => String(selection.outcome ?? '').toUpperCase() !== 'PENDING');
+  const mostBackedTeam = latestNarrativeStats[0] ?? null;
+  const narrativeTeamResults = useMemo(() => {
+    const results = new Map<number, 'WIN' | 'LOSS' | 'DRAW' | 'POSTPONED'>();
+    if (!latestNarrativeWeek) return results;
+    latestNarrativeWeek.fixtures.forEach((fixture) => {
+      if (fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED') {
+        results.set(fixture.homeTeamId, 'POSTPONED');
+        results.set(fixture.awayTeamId, 'POSTPONED');
+        return;
+      }
+      if (fixture.status !== 'FINISHED' || fixture.scoreHome == null || fixture.scoreAway == null) return;
+      if (fixture.scoreHome > fixture.scoreAway) {
+        results.set(fixture.homeTeamId, 'WIN');
+        results.set(fixture.awayTeamId, 'LOSS');
+      } else if (fixture.scoreHome < fixture.scoreAway) {
+        results.set(fixture.homeTeamId, 'LOSS');
+        results.set(fixture.awayTeamId, 'WIN');
+      } else {
+        results.set(fixture.homeTeamId, 'DRAW');
+        results.set(fixture.awayTeamId, 'DRAW');
+      }
+    });
+    return results;
+  }, [latestNarrativeWeek]);
+  const biggestCasualty = latestNarrativeStats.find((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS') ?? null;
+  const contrarianSurvivor = [...latestNarrativeStats].reverse().find((stat) => {
+    if (stat.teamId == null || stat.pickCount <= 0) return false;
+    const result = narrativeTeamResults.get(stat.teamId);
+    return result === 'WIN' || result === 'POSTPONED';
+  }) ?? null;
+  const survivingPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && ['WIN', 'POSTPONED'].includes(String(narrativeTeamResults.get(stat.teamId))));
+  const doomedPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS');
+  const gwPickedCount = resolvedSelections.length;
+  const gwAdvancedCount = resolvedSelections.filter((selection) => {
+    const outcome = String(selection.outcome ?? '').toUpperCase();
+    return outcome === 'ADVANCE' || outcome === 'POSTPONED_ADVANCE';
+  }).length;
+  const gwEliminatedFromSelections = resolvedSelections.filter((selection) => {
+    const outcome = String(selection.outcome ?? '').toUpperCase();
+    return outcome === 'ELIMINATED' || outcome === 'LOSS' || outcome === 'OUT';
+  }).length;
+  const gwSurvivalFromSelections = gwPickedCount > 0 ? Math.round((gwAdvancedCount / gwPickedCount) * 100) : null;
+  const gwActiveAtStart = latestSelectionsData?.activeAtStart ?? null;
+  const gwAdvancedThisWeek = latestSelectionsData?.advancedThisWeek ?? null;
+  const gwEliminatedThisWeek = latestSelectionsData?.eliminatedThisWeek ?? null;
+  const gwSurvivalFromBackend = (gwActiveAtStart != null && gwAdvancedThisWeek != null && gwActiveAtStart > 0)
+    ? Math.round((gwAdvancedThisWeek / gwActiveAtStart) * 100)
+    : null;
+  const totalResolvedPicks = latestNarrativeStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
+  const survivingResolvedPicks = survivingPickedTeams.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
+  const computedWeeklySurvivalRate = totalResolvedPicks > 0 ? Math.round((survivingResolvedPicks / totalResolvedPicks) * 100) : null;
+  const narrativeWeekInProgress = latestNarrativeWeek?.gameweekStatus === 'IN_PROGRESS';
+  const weeklySurvivalRate = narrativeWeekInProgress
+    ? (gwSurvivalFromSelections ?? computedWeeklySurvivalRate)
+    : (gwSurvivalFromBackend ?? gwSurvivalFromSelections ?? computedWeeklySurvivalRate);
+  const weeklyPickedCount = narrativeWeekInProgress
+    ? (gwPickedCount || totalResolvedPicks || 0)
+    : (gwActiveAtStart ?? (gwPickedCount || totalResolvedPicks || 0));
+  const weeklyAdvancedCount = narrativeWeekInProgress
+    ? (gwAdvancedCount || survivingResolvedPicks || 0)
+    : (gwAdvancedThisWeek ?? (gwAdvancedCount || survivingResolvedPicks || 0));
+  const weeklyEliminatedCount = narrativeWeekInProgress
+    ? (gwEliminatedFromSelections || (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0))
+    : (gwEliminatedThisWeek ?? (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0));
+  const baseEliminatedCount = Math.max(participantCount - (competition?.activeCount ?? 0), 0);
+  const liveWeekExtraEliminations = narrativeWeekInProgress ? gwEliminatedFromSelections : 0;
+  const effectiveEliminatedCount = Math.min(baseEliminatedCount + liveWeekExtraEliminations, participantCount);
+  const effectiveActiveCount = Math.max(participantCount - effectiveEliminatedCount, 0);
+  const eliminatedCount = effectiveEliminatedCount;
+  const survivalRate = participantCount > 0 ? Math.max(Math.round((effectiveActiveCount / participantCount) * 100), effectiveActiveCount > 0 ? 1 : 0) : 0;
+  const lifelinesPlayedThisWeek = latestSelections.filter((selection) => Boolean(selection.useLifeline)).length;
+  const narrativeWeekLabel = latestNarrativeWeek ? `Gameweek ${latestNarrativeWeek.weekNumber}` : null;
+  const hasWinner = Boolean(competition?.status === 'COMPLETED' || ((competition?.activeCount ?? 0) === 1 && (competition?.participantCount ?? 0) > 1));
+  const latestResolvedPick = pickHistory.filter((pick) => pick.outcome && pick.outcome !== 'PENDING').sort((a, b) => b.weekNumber - a.weekNumber)[0] ?? null;
+
+  let pulseTitle = 'Competition pressure is building';
+  let pulseBody = competition?.status === 'UPCOMING'
+    ? 'Registration is open and the first real pressure point is the next lock.'
+    : 'The next lock is where this field starts splitting into survivors and exits.';
+
+  if (hasWinner) {
+    const winnerName = competition?.winnerUsername ?? (isWinner ? 'You' : 'One player');
+    pulseTitle = isWinner ? 'You won this competition' : 'We have a winner';
+    pulseBody = `${winnerName} is the last survivor standing${latestNarrativeWeek ? ` after Gameweek ${latestNarrativeWeek.weekNumber}` : ''}. Every round survived, every pick paid off.`;
+  } else if (latestNarrativeWeek && biggestCasualty) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is catching the crowd out' : 'caught the crowd out'}`;
+    pulseBody = `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player' : 'players'} trusted ${biggestCasualty.teamShortName} and paid for it. ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor remains' : 'survivors remain'}.`;
+  } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate < 50) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is chaos' : 'was chaos'}`;
+    pulseBody = `${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'player went' : 'players went'} out in the latest week. Only ${weeklySurvivalRate}% survived the round.`;
+  } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate >= 50 && weeklySurvivalRate <= 70) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is tightening the race' : 'tightened the race'}`;
+    pulseBody = `${weeklySurvivalRate}% survived the round, and the middle of the pack is starting to thin out.`;
+  } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate >= 85) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is steady so far' : 'was steady'}`;
+    pulseBody = `${weeklySurvivalRate}% made it through. The real shakeups may still be ahead.`;
+  } else if (latestNarrativeWeek && doomedPickedTeams.length === 0 && survivingPickedTeams.length > 0) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is sparing the field' : 'spared the field'}`;
+    pulseBody = `No picked teams lost in the latest week. The standings stayed tight with ${effectiveActiveCount} still alive.`;
+  } else if (latestNarrativeWeek && contrarianSurvivor) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is rewarding nerve' : 'rewarded nerve'}`;
+    pulseBody = `${contrarianSurvivor.pickCount} ${contrarianSurvivor.pickCount === 1 ? 'player' : 'players'} backed ${contrarianSurvivor.teamShortName} and came through when the crowd did not.`;
+  } else if (latestNarrativeWeek && mostBackedTeam) {
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is following the crowd' : 'followed the crowd'}`;
+    pulseBody = `${mostBackedTeam.pickCount} players backed ${mostBackedTeam.teamShortName}. The table is still tightening with ${effectiveActiveCount} left standing.`;
+  } else if (isEliminated) {
+    pulseTitle = `Your run ended in Gameweek ${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}`;
+    pulseBody = 'You are out of this competition now, but you can still follow every remaining fixture, upset, and survivor.';
+  }
 
   const getTeamPickStat = (gameweekId: number, teamId: number, teamShortName: string, teamName: string) => {
     const teamMap = pickStatsByGameweek.get(gameweekId);
@@ -409,10 +583,17 @@ export default function CompetitionDetailScreen() {
 
 
   const actionSummary = (() => {
-    if (!joined) return { title: 'Join this competition', detail: 'Create your entry to start making picks.', tone: 'brand' as const };
-    if (selectedEntry?.status === 'WINNER') return { title: 'You won this competition', detail: 'Your entry is marked as winner.', tone: 'success' as const };
-    if (selectedEntry?.status === 'ELIMINATED') return { title: 'Entry eliminated', detail: selectedEntry.eliminatedWeek ? `Eliminated in gameweek ${selectedEntry.eliminatedWeek}.` : 'This entry is out of the competition.', tone: 'danger' as const };
+    if (!joined) {
+      if (competition?.status === 'UPCOMING' && onlinePaymentRequired) return { title: 'Online payment required', detail: `Pay securely online to enter this competition. Entry fee: €${competition.entryFee}.`, tone: 'brand' as const };
+      if (competition?.status === 'UPCOMING') return { title: 'Join this competition', detail: 'Create your entry to start making picks.', tone: 'brand' as const };
+      return { title: 'Viewing only', detail: 'This competition has already started or finished. You can follow fixtures, selections, and results, but new entries are closed.', tone: 'warn' as const };
+    }
+    if (isWinner) return { title: 'You won this competition', detail: latestResolvedPick ? `The title is secured. Latest resolved pick: ${latestResolvedPick.teamShortName} in Gameweek ${latestResolvedPick.weekNumber}.` : 'The title is secured. Review the full path and final standings anytime.', tone: 'success' as const };
+    if (isEliminated) return { title: `Eliminated in Gameweek ${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}`, detail: latestResolvedPick ? `Picking is finished for this entry. Latest resolved pick: ${latestResolvedPick.teamShortName} in Gameweek ${latestResolvedPick.weekNumber}.` : 'Picking is finished for this entry, but you can still track every fixture, pick trend, and remaining survivor.', tone: 'danger' as const };
+    if (hasWinner || competition?.status === 'COMPLETED') return { title: 'Competition complete', detail: competition?.winnerUsername ? `${competition.winnerUsername} is the last survivor standing. Review the final standings and gameweek history below.` : 'This competition is complete. Review the final standings and gameweek history below.', tone: 'success' as const };
+    if (awaitingOnlinePayment) return { title: 'Complete online payment', detail: 'Your entry is waiting for Stripe payment confirmation. Picks are disabled until payment completes.', tone: 'warn' as const };
     if (awaitingPayment && strictManualPayment) return { title: 'Awaiting payment confirmation', detail: 'Picks are disabled until club admin marks this entry as paid.', tone: 'warn' as const };
+    if (canAddAnotherEntry && onlinePaymentRequired) return { title: 'Add another paid entry', detail: `Pay €${competition?.entryFee ?? 0} online to add another entry.`, tone: 'brand' as const };
     if (canPick) return { title: 'Pick required', detail: 'Your entry is active and ready for this gameweek pick.', tone: 'brand' as const };
     return { title: 'Monitoring competition state', detail: 'Review gameweek status and fixture progress below.', tone: 'neutral' as const };
   })();
@@ -427,17 +608,98 @@ export default function CompetitionDetailScreen() {
     } catch {}
   };
 
-  const clubLogoUrl = (competition as Competition & { clubLogoUrl?: string | null })?.clubLogoUrl;
-  const clubName = (competition as Competition & { clubName?: string | null })?.clubName;
+  const openOnlinePayment = async () => {
+    if (!competition) return;
+    setPaymentActionError(null);
+    setPaymentActionSuccess(null);
+    setPaymentInProgress(true);
+    try {
+      const stripe = await import('@stripe/stripe-react-native');
+      const [{ data: config }, { data: intent }] = await Promise.all([
+        api.get<PaymentConfigResponse>('/payments/config'),
+        api.post<PaymentIntentResponse>(`/payments/competitions/${competition.id}/intent`),
+      ]);
+
+      const publishableKey = config.publishableKey;
+      if (!publishableKey || publishableKey.startsWith('pk_test_your')) {
+        throw new Error('Stripe is not configured for mobile payments.');
+      }
+
+      await stripe.initStripe({
+        publishableKey,
+        merchantIdentifier: 'merchant.com.lastmanstanding.app',
+        urlScheme: 'lastmanstanding',
+      });
+
+      const initResult = await stripe.initPaymentSheet({
+        merchantDisplayName: 'Last Man Standing',
+        paymentIntentClientSecret: intent.clientSecret,
+        returnURL: 'lastmanstanding://stripe-redirect',
+        style: 'alwaysDark',
+        primaryButtonLabel: `Pay €${((intent.amountCents ?? 0) / 100).toFixed(2)} & join`,
+        googlePay: {
+          merchantCountryCode: 'IE',
+          currencyCode: 'EUR',
+          testEnv: publishableKey.startsWith('pk_test'),
+        },
+        allowsDelayedPaymentMethods: false,
+      });
+
+      if (initResult.error) {
+        throw new Error(initResult.error.message ?? 'Could not initialise the payment form.');
+      }
+
+      const paymentResult = await stripe.presentPaymentSheet();
+      if (paymentResult.error) {
+        if (paymentResult.error.code === 'Canceled') return;
+        throw new Error(paymentResult.error.message ?? 'Payment was not completed.');
+      }
+
+      await api.post(`/payments/competitions/${competition.id}/confirm`, {
+        paymentIntentId: intent.paymentIntentId,
+      });
+
+      setPaymentActionSuccess('Payment complete. Your entry is confirmed.');
+      await Promise.all([
+        myEntriesQuery.refetch(),
+        competitionQuery.refetch(),
+        myStatusQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+      ]);
+    } catch (error: any) {
+      const message = error?.response?.data?.message
+        ?? error?.response?.data?.error
+        ?? error?.message
+        ?? 'Payment could not be completed. Please try again.';
+      setPaymentActionError(message);
+    } finally {
+      setPaymentInProgress(false);
+    }
+  };
+
+  const handleEntryAction = () => {
+    if (onlinePaymentRequired) {
+      void openOnlinePayment();
+      return;
+    }
+    joinMutation.mutate();
+  };
+
+  const brandedCompetition = competition as Competition & { clubLogoUrl?: string | null; clubName?: string | null; clubPrimaryColor?: string | null; clubSecondaryColor?: string | null };
+  const clubLogoUrl = brandedCompetition?.clubLogoUrl;
+  const clubName = brandedCompetition?.clubName;
+  const clubPrimaryColor = brandedCompetition?.clubPrimaryColor ?? colors.brand;
+  const clubSecondaryColor = brandedCompetition?.clubSecondaryColor ?? clubPrimaryColor;
   const actionBanner = actionSummary;
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.brand} />}>
-        <View style={styles.heroWeb}>
+      <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={clubPrimaryColor} />}>
+        <View style={[styles.heroWeb, { borderTopColor: clubPrimaryColor, backgroundColor: '#0f172a' }]}>
           {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.clubLogoMobile} /> : null}
           <TouchableOpacity onPress={() => router.push('/competitions')} style={styles.lobbyLink}>
-            <Text style={styles.lobbyLinkText}>← Competition lobby</Text>
+            <Text style={[styles.lobbyLinkText, { color: clubPrimaryColor }]}>← Competition lobby</Text>
           </TouchableOpacity>
 
           <View style={styles.heroPillsRow}>
@@ -464,25 +726,31 @@ export default function CompetitionDetailScreen() {
 
           <View style={styles.heroActionsRow}>
             {competition?.status === 'UPCOMING' ? (
-              <TouchableOpacity style={styles.inviteBtn} onPress={() => void onShareInvite()}>
-                <Text style={styles.inviteBtnText}>Invite</Text>
+              <TouchableOpacity style={[styles.inviteBtn, { borderColor: `${clubPrimaryColor}55`, backgroundColor: `${clubPrimaryColor}18` }]} onPress={() => void onShareInvite()}>
+                <Text style={[styles.inviteBtnText, { color: clubPrimaryColor }]}>Invite</Text>
               </TouchableOpacity>
             ) : null}
-            <TouchableOpacity style={styles.survivorBtn} onPress={() => router.push(`/competitions/${id}/survivor-table`)}>
-              <Text style={styles.survivorBtnText}>Survivor Table</Text>
+            <TouchableOpacity style={[styles.survivorBtn, { borderColor: `${clubPrimaryColor}55`, backgroundColor: `${clubPrimaryColor}18` }]} onPress={() => router.push(`/competitions/${id}/survivor-table`)}>
+              <Text style={[styles.survivorBtnText, { color: clubPrimaryColor }]}>Survivor Table</Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.pulsePanel}>
+          <View style={[styles.pulsePanel, { borderLeftColor: clubPrimaryColor, backgroundColor: `${clubSecondaryColor}10` }]}>
             <View style={styles.pulseEyebrowRow}>
               {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.pulseLogo} /> : null}
-              <Text style={styles.pulseEyebrow}>{clubName ?? competition?.name ?? 'Competition'} Pulse</Text>
-              {currentGameweek?.weekNumber ? <Text style={styles.pulseLatest}>Latest: GW{currentGameweek.weekNumber}</Text> : null}
+              <Text style={[styles.pulseEyebrow, { color: clubPrimaryColor }]}>{clubName ?? competition?.name ?? 'Competition'} Pulse</Text>
+              {latestNarrativeWeek?.weekNumber ? <Text style={styles.pulseLatest}>Latest: GW{latestNarrativeWeek.weekNumber}</Text> : currentGameweek?.weekNumber ? <Text style={styles.pulseLatest}>Latest: GW{currentGameweek.weekNumber}</Text> : null}
             </View>
             <Text style={styles.pulseHeadline}>{pulseTitle}</Text>
             <Text style={styles.pulseCopy}>{pulseBody}</Text>
+            {hasWinner && competition?.winnerUsername ? (
+              <View style={styles.winnerCallout}>
+                <Text style={styles.winnerIcon}>🏆</Text>
+                <Text style={styles.winnerText}>{isWinner ? 'You are the winner!' : `Winner: ${competition.winnerUsername}`}</Text>
+              </View>
+            ) : null}
             <View style={styles.webPulseChips}>
-              <Text style={styles.webPulseChip}>{eliminatedCount} eliminated</Text>
+              <Text style={styles.webPulseChip}>{effectiveEliminatedCount} eliminated</Text>
               <Text style={styles.webPulseChip}>{survivalRate}% survival rate</Text>
               {weeklySurvivalRate != null ? <Text style={styles.webPulseChip}>GW survival {weeklySurvivalRate}% · {weeklyAdvancedCount} adv · {weeklyEliminatedCount} out</Text> : null}
               {mostBackedTeam ? <Text style={styles.webPulseChip}>Crowd pick: {mostBackedTeam.teamShortName} ({mostBackedTeam.pickCount})</Text> : null}
@@ -495,25 +763,25 @@ export default function CompetitionDetailScreen() {
           </View>
         </View>
 
-        <TouchableOpacity style={[styles.mobileToggle, mobileInsightsOpen ? styles.mobileToggleOpen : null]} onPress={() => setMobileInsightsOpen((v) => !v)}>
+        <TouchableOpacity style={[styles.mobileToggle, mobileInsightsOpen ? styles.mobileToggleOpen : null, mobileInsightsOpen ? { borderColor: `${clubPrimaryColor}80`, backgroundColor: `${clubPrimaryColor}12` } : null]} onPress={() => setMobileInsightsOpen((v) => !v)}>
           <View style={styles.mobileToggleCopy}>
-            <Text style={styles.mobileToggleKicker}>Panel</Text>
+            <Text style={[styles.mobileToggleKicker, { color: clubPrimaryColor }]}>Panel</Text>
             <Text style={styles.mobileToggleText}>Competition insights</Text>
             <Text style={styles.mobileToggleMeta}>{mobileInsightsOpen ? 'Expanded' : 'Tap to show trend cards'}</Text>
           </View>
-          <View style={[styles.mobileToggleChevronBox, mobileInsightsOpen ? styles.mobileToggleChevronBoxOpen : null]}><Text style={styles.mobileToggleState}>{mobileInsightsOpen ? '▲' : '▼'}</Text></View>
+          <View style={[styles.mobileToggleChevronBox, mobileInsightsOpen ? styles.mobileToggleChevronBoxOpen : null, mobileInsightsOpen ? { borderColor: `${clubPrimaryColor}66`, backgroundColor: `${clubPrimaryColor}22` } : null]}><Text style={[styles.mobileToggleState, { color: clubPrimaryColor }]}>{mobileInsightsOpen ? '▲' : '▼'}</Text></View>
         </TouchableOpacity>
         {mobileInsightsOpen ? (
           <View style={styles.insightStack}>
-            <InsightTile tone="brand" eyebrow="Crowd read" title={mostBackedTeam ? `${mostBackedTeam.teamShortName} drew the crowd` : 'Waiting for the first crowd signal'} detail={mostBackedTeam ? `${mostBackedTeam.pickCount} players backed ${mostBackedTeam.teamShortName} in the latest tracked week.` : 'Once a gameweek locks, this area highlights where the crowd moved together.'} />
-            <InsightTile tone="danger" eyebrow="Knockout blow" title={weeklyEliminatedCount > 0 ? `${weeklyEliminatedCount} new exits` : 'No major casualty yet'} detail="When fixtures resolve, this card highlights the biggest elimination source." />
-            <InsightTile tone="success" eyebrow="Contrarian edge" title="Waiting for a bold low-owned win" detail="If a low-owned choice breaks right, this is where that edge appears." />
+            <InsightTile tone="brand" eyebrow="Crowd read" title={mostBackedTeam ? `${mostBackedTeam.teamShortName} drew the crowd` : 'Waiting for the first crowd signal'} detail={mostBackedTeam ? `${mostBackedTeam.pickCount} players backed ${mostBackedTeam.teamName ?? mostBackedTeam.teamShortName} in ${narrativeWeekLabel ?? 'the latest resolved week'}${mostBackedTeam.percentage != null ? `, accounting for ${mostBackedTeam.percentage}% of tracked picks` : ''}.` : 'Once a gameweek locks, this area highlights where the crowd moved together.'} />
+            <InsightTile tone="danger" eyebrow="Knockout blow" title={biggestCasualty ? `${biggestCasualty.teamShortName} was the trapdoor` : weeklyEliminatedCount > 0 ? `${weeklyEliminatedCount} new exits` : 'No major casualty yet'} detail={biggestCasualty ? `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry went' : 'entries went'} out backing ${biggestCasualty.teamName ?? biggestCasualty.teamShortName}.` : weeklyEliminatedCount > 0 ? `${narrativeWeekLabel ?? 'The latest week'} removed ${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'entry' : 'entries'} from the field.` : 'When fixtures resolve, this card highlights the biggest elimination source.'} />
+            <InsightTile tone="success" eyebrow="Contrarian edge" title={contrarianSurvivor ? `${contrarianSurvivor.teamShortName} rewarded nerve` : 'Waiting for a bold low-owned win'} detail={contrarianSurvivor ? `Only ${contrarianSurvivor.pickCount} ${contrarianSurvivor.pickCount === 1 ? 'player' : 'players'} trusted ${contrarianSurvivor.teamName ?? contrarianSurvivor.teamShortName}, and they stayed alive.` : 'If a low-owned choice breaks right, this is where that edge appears.'} />
           </View>
         ) : null}
 
         <View style={styles.changedPanel}>
-          <Text style={styles.sectionEyebrow}>What Changed This Gameweek</Text>
-          <Text style={styles.changedTitle}>Latest gameweek snapshot</Text>
+          <Text style={[styles.sectionEyebrow, { color: clubPrimaryColor }]}>What Changed This Gameweek</Text>
+          <Text style={styles.changedTitle}>{narrativeWeekLabel ?? 'Latest gameweek'} snapshot</Text>
           <View style={styles.snapshotTilesWeb}>
             <SnapshotTile label="New eliminations" value={String(weeklyEliminatedCount)} tone="danger" />
             <SnapshotTile label="Most picked" value={mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet'} />
@@ -526,9 +794,23 @@ export default function CompetitionDetailScreen() {
           <Text style={styles.stateEyebrow}>{!joined && competition?.status === 'UPCOMING' ? 'Next Step' : actionBanner.tone === 'danger' ? 'Status' : 'Next Action'}</Text>
           <Text style={styles.stateTitle}>{actionBanner.title}</Text>
           <Text style={styles.stateCopy}>{actionBanner.detail}</Text>
-          {canJoinCompetition || canAddAnotherEntry ? (
-            <PrimaryButton label={joinMutation.isPending ? 'Working...' : joined ? 'Add another entry' : 'Join competition'} onPress={() => joinMutation.mutate()} disabled={joinMutation.isPending} />
+          {canJoinCompetition || canAddAnotherEntry || awaitingOnlinePayment ? (
+            <PrimaryButton
+              label={paymentInProgress || joinMutation.isPending
+                ? 'Working...'
+                : onlinePaymentRequired
+                ? joined
+                  ? `Pay €${competition?.entryFee ?? 0} online`
+                  : `Pay €${competition?.entryFee ?? 0} & join`
+                : joined
+                ? 'Add another entry'
+                : 'Join competition'}
+              onPress={handleEntryAction}
+              disabled={paymentInProgress || joinMutation.isPending}
+            />
           ) : null}
+          {paymentActionError ? <Text style={styles.paymentActionError}>{paymentActionError}</Text> : null}
+          {paymentActionSuccess ? <Text style={styles.paymentActionSuccess}>{paymentActionSuccess}</Text> : null}
         </View>
 
         {joined && (myEntriesQuery.data?.length ?? 0) > 1 ? (
@@ -558,7 +840,7 @@ export default function CompetitionDetailScreen() {
 
         <TouchableOpacity style={[styles.mobileToggle, mobileRulesOpen ? styles.mobileToggleOpen : null]} onPress={() => setMobileRulesOpen((v) => !v)}>
           <View style={styles.mobileToggleCopy}>
-            <Text style={styles.mobileToggleKicker}>Panel</Text>
+            <Text style={[styles.mobileToggleKicker, { color: clubPrimaryColor }]}>Panel</Text>
             <Text style={styles.mobileToggleText}>Rules & Status</Text>
             <Text style={styles.mobileToggleMeta}>{mobileRulesOpen ? 'Expanded' : 'Tap to show rules and payment state'}</Text>
           </View>
@@ -571,7 +853,7 @@ export default function CompetitionDetailScreen() {
               <Text style={styles.rulesStatusSubtitle}>The competition contract, payment state, and team-pool picture in one panel.</Text>
             </View>
             <View style={styles.summaryGrid}>
-              <SummaryTile label="Entry" value={competition?.entryFee && competition.entryFee > 0 ? `€${competition.entryFee}` : 'Free'} detail={awaitingPayment && competition?.paymentMode === 'MANUAL' ? 'Awaiting organiser confirmation' : competition?.paymentMode === 'MANUAL' ? 'Pay organiser directly' : competition?.paymentMode === 'STRIPE' ? 'Paid online' : 'No payment required'} accent="brand" />
+              <SummaryTile label="Entry" value={competition?.entryFee && competition.entryFee > 0 ? `€${competition.entryFee}` : 'Free'} detail={awaitingOnlinePayment ? 'Online payment still required' : awaitingPayment && competition?.paymentMode === 'MANUAL' ? 'Awaiting organiser confirmation' : competition?.paymentMode === 'MANUAL' ? 'Pay organiser directly' : competition?.paymentMode === 'STRIPE' ? (joined ? 'Paid online' : 'Pay online to enter') : 'No payment required'} accent="brand" />
               <SummaryTile label="Prize Pool" value={competition?.prizePool && competition.prizePool > 0 ? `€${competition.prizePool}` : 'TBD'} detail={competition?.prizePool && competition.prizePool > 0 ? 'Visible to all players' : 'No fixed amount set'} accent="warn" />
               <SummaryTile label="Missed Pick" value={competition?.missedPickMode === 'ALLOW' ? 'Allowed' : 'Eliminate'} detail={competition?.missedPickMode === 'ALLOW' ? 'Competition allows misses' : 'No pick means you are out'} />
               <SummaryTile label="Postponed Match" value={competition?.postponedConsumesTeam ? 'Counts as used' : 'Can be reused'} detail={competition?.postponedConsumesTeam ? 'That team is still burned' : 'The pick does not consume the team'} />
@@ -597,7 +879,11 @@ export default function CompetitionDetailScreen() {
             const collapsed = collapsedWeeks.has(gw.weekNumber);
             const isLocked = gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt);
             const isCompleted = gw.gameweekStatus === 'COMPLETED' || gw.fixtures.every((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED');
-            const myPickForGw = myPickByGameweek.get(gw.gameweekId);
+            const savedPickForGw = myPickByGameweek.get(gw.gameweekId);
+            const optimisticPickForGw = optimisticPick?.gwId === gw.gameweekId
+              ? { teamId: optimisticPick.teamId, teamName: optimisticPick.teamName, teamShortName: optimisticPick.teamShortName, locked: false, useLifeline: lifelineForGwId === gw.gameweekId, outcome: 'PENDING' }
+              : null;
+            const myPickForGw = optimisticPickForGw ?? savedPickForGw;
             return (
               <View key={gw.weekNumber} style={[styles.webGameweekCard, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
                 <TouchableOpacity
@@ -647,7 +933,7 @@ export default function CompetitionDetailScreen() {
                     ) : null}
                     {gw.fixtures.map((f) => {
                       const eliminatedBeforeThisGw = isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek;
-                      const canPickThisGw = isParticipant && !isEliminated && !isWinner && !(awaitingPayment && strictManualPayment) && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
+                      const canPickThisGw = isParticipant && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
                       const homeIsMyPick = myPickForGw?.teamId === f.homeTeamId;
                       const awayIsMyPick = myPickForGw?.teamId === f.awayTeamId;
                       const homeUsed = consumedTeamIds.has(f.homeTeamId) && !homeIsMyPick;
@@ -656,9 +942,9 @@ export default function CompetitionDetailScreen() {
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
                       return (
                         <View key={f.id} style={styles.webFixtureRow}>
-                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineForGwId === gw.gameweekId })} />
                           <FixtureCenter fixture={f} />
-                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineForGwId === gw.gameweekId })} />
                         </View>
                       );
                     })}
@@ -857,6 +1143,9 @@ const styles = StyleSheet.create({
   pulseLatest: { color: '#fde68a', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1 },
   pulseHeadline: { color: '#fff', fontSize: 24, lineHeight: 29, fontWeight: '900', letterSpacing: -0.3, marginTop: 12 },
   pulseCopy: { color: '#cbd5e1', fontSize: 14, lineHeight: 22, marginTop: 8 },
+  winnerCallout: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: '#facc154d', backgroundColor: '#facc151a', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, marginTop: 12 },
+  winnerIcon: { fontSize: 15 },
+  winnerText: { color: '#fde68a', fontSize: 12, fontWeight: '900' },
   webPulseChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 13 },
   webPulseChip: { overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#00000026', borderRadius: 999, color: '#e5e7eb', fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6 },
 
@@ -906,6 +1195,8 @@ const styles = StyleSheet.create({
   stateEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
   stateTitle: { color: '#fff', fontSize: 18, fontWeight: '900', marginTop: 5 },
   stateCopy: { color: '#d1d5db', fontSize: 13, lineHeight: 21, marginTop: 5 },
+  paymentActionError: { color: '#fca5a5', fontSize: 12, fontWeight: '800', marginTop: 10 },
+  paymentActionSuccess: { color: '#86efac', fontSize: 12, fontWeight: '800', marginTop: 10 },
 
   entryRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
   entryChip: { borderRadius: 999, borderWidth: 1, borderColor: '#334155', backgroundColor: colors.panelSoft, paddingVertical: 6, paddingHorizontal: 10 },

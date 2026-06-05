@@ -3,7 +3,7 @@ import { Image, Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpaci
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome, Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { API_BASE_URL } from '../api/client';
+import { API_BASE_URL, getApiErrorMessage } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { authenticateWithBiometrics, getBiometricAvailability, hasStoredTokensForBiometricLogin, isBiometricLoginEnabled } from '../auth/biometricAuth';
 
@@ -43,7 +43,7 @@ export default function LoginScreen() {
       await refreshMe();
       router.replace('/competitions');
     } catch (e: any) {
-      setError(e?.response?.data?.message ?? 'Biometric sign in failed. Use email and password.');
+      setError(getApiErrorMessage(e, 'Biometric sign in failed. Use email and password.'));
     } finally {
       setBiometricBusy(false);
     }
@@ -56,7 +56,7 @@ export default function LoginScreen() {
       await login(email.trim(), password);
       router.replace('/competitions');
     } catch (e: any) {
-      setError(e?.response?.data?.message ?? 'Login failed');
+      setError(getApiErrorMessage(e, 'Login failed'));
     } finally {
       setSubmitting(false);
     }

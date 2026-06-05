@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -70,6 +70,7 @@ function statusTone(status: Competition['status']): 'brand' | 'success' | 'neutr
 function paymentLabel(comp: CompetitionLike) {
   if ((comp.entryFee ?? 0) <= 0 || comp.paymentMode === 'FREE') return 'Free';
   if (comp.paymentMode === 'MANUAL') return `€${comp.entryFee} to organiser`;
+  if (comp.paymentMode === 'STRIPE') return `€${comp.entryFee} online`;
   return `€${comp.entryFee}`;
 }
 
@@ -78,6 +79,7 @@ export default function CompetitionsScreen() {
   const [mode, setMode] = useState<LandingMode>('available');
   const [search, setSearch] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [joinCodeStatus, setJoinCodeStatus] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [feeFilter, setFeeFilter] = useState<FeeFilter>('ALL');
   const [sortBy, setSortBy] = useState<SortBy>('date');
@@ -103,6 +105,38 @@ export default function CompetitionsScreen() {
   const myDetailsQuery = useQuery({
     queryKey: ['competitions-my-details'],
     queryFn: async () => (await api.get<MyCompetition[]>('/competitions/my/details')).data ?? [],
+  });
+
+
+  const joinCodeMutation = useMutation({
+    mutationFn: async (code: string) => {
+      const competition = (await api.get<Competition>(`/competitions/code/${encodeURIComponent(code)}`)).data;
+      const requiresOnlinePayment = competition.paymentMode === 'STRIPE' && (competition.entryFee ?? 0) > 0;
+      if (!requiresOnlinePayment) {
+        await api.post(`/competitions/${competition.id}/join`);
+      }
+      return { competition, requiresOnlinePayment };
+    },
+    onSuccess: async ({ competition, requiresOnlinePayment }) => {
+      setJoinCodeInput('');
+      setSearch('');
+      setMode(requiresOnlinePayment ? 'available' : 'mine');
+      setJoinCodeStatus({
+        tone: requiresOnlinePayment ? 'info' : 'success',
+        message: requiresOnlinePayment
+          ? `${competition.name} is unlocked. Complete online payment to join.`
+          : `Joined ${competition.name}.`,
+      });
+      await Promise.all([competitionsQuery.refetch(), myDetailsQuery.refetch()]);
+      router.push(`/competitions/${competition.id}`);
+    },
+    onError: (error: any) => {
+      const status = error?.response?.status;
+      const message = error?.response?.data?.message
+        ?? error?.response?.data?.error
+        ?? (status === 404 ? 'Invite code not found.' : 'Could not join with that invite code.');
+      setJoinCodeStatus({ tone: 'error', message });
+    },
   });
 
   const all = (competitionsQuery.data ?? []) as CompetitionLike[];
@@ -214,9 +248,12 @@ export default function CompetitionsScreen() {
 
   const submitJoinCode = () => {
     const code = joinCodeInput.trim().toUpperCase();
-    if (!code) return;
-    setSearch(code);
-    setMode('available');
+    if (!code) {
+      setJoinCodeStatus({ tone: 'error', message: 'Enter an invite code first.' });
+      return;
+    }
+    setJoinCodeStatus({ tone: 'info', message: `Checking invite code ${code}...` });
+    joinCodeMutation.mutate(code);
   };
 
   const refresh = () => void Promise.all([competitionsQuery.refetch(), myDetailsQuery.refetch()]);
@@ -257,18 +294,21 @@ export default function CompetitionsScreen() {
 
           {mode === 'available' ? (
             <View style={styles.availableControlsRow}>
-              <View style={styles.joinCodeBox}>
-                <TextInput
-                  value={joinCodeInput}
-                  onChangeText={(value) => setJoinCodeInput(value.toUpperCase())}
-                  placeholder="Enter join code"
-                  placeholderTextColor="#64748b"
-                  autoCapitalize="characters"
-                  style={styles.joinCodeInput}
-                />
-                <TouchableOpacity style={styles.unlockButton} onPress={submitJoinCode}>
-                  <Text style={styles.unlockButtonText}>Unlock</Text>
-                </TouchableOpacity>
+              <View style={styles.joinCodeStack}>
+                <View style={styles.joinCodeBox}>
+                  <TextInput
+                    value={joinCodeInput}
+                    onChangeText={(value) => { setJoinCodeInput(value.toUpperCase()); setJoinCodeStatus(null); }}
+                    placeholder="Enter join code"
+                    placeholderTextColor="#64748b"
+                    autoCapitalize="characters"
+                    style={styles.joinCodeInput}
+                  />
+                  <TouchableOpacity style={[styles.unlockButton, joinCodeMutation.isPending ? styles.unlockButtonDisabled : null]} onPress={submitJoinCode} disabled={joinCodeMutation.isPending}>
+                    <Text style={styles.unlockButtonText}>{joinCodeMutation.isPending ? 'Joining...' : 'Unlock'}</Text>
+                  </TouchableOpacity>
+                </View>
+                {joinCodeStatus ? <Text style={[styles.joinCodeStatus, joinCodeStatus.tone === 'error' ? styles.joinCodeStatusError : joinCodeStatus.tone === 'success' ? styles.joinCodeStatusSuccess : null]}>{joinCodeStatus.message}</Text> : null}
               </View>
               <TouchableOpacity style={[styles.refineButton, showFilters || activeFilterCount > 0 ? styles.refineButtonActive : null]} onPress={() => setShowFilters((v) => !v)}>
                 <Text style={[styles.refineText, showFilters || activeFilterCount > 0 ? styles.refineTextActive : null]}>
@@ -522,7 +562,7 @@ function CompetitionCard({ comp, joined, joinedCount, onOpen }: { comp: Competit
 
       <View style={styles.cardActions}>
         <TouchableOpacity style={styles.secondaryButton} onPress={onOpen}><Text style={styles.secondaryButtonText}>{joined ? 'Open →' : 'View'}</Text></TouchableOpacity>
-        {canJoin ? <TouchableOpacity style={[styles.primaryButton, { backgroundColor: clubAccent }]} onPress={onOpen}><Text style={styles.primaryButtonText}>{joined ? 'Add entry' : entryFee > 0 ? `Join · €${entryFee}` : 'Join Free'}</Text></TouchableOpacity> : null}
+        {canJoin ? <TouchableOpacity style={[styles.primaryButton, { backgroundColor: clubAccent }]} onPress={onOpen}><Text style={styles.primaryButtonText}>{joined ? 'Add entry' : entryFee > 0 && comp.paymentMode === 'STRIPE' ? `Pay & Join · €${entryFee}` : entryFee > 0 ? `Join · €${entryFee}` : 'Join Free'}</Text></TouchableOpacity> : null}
         {!joined && comp.status === 'ACTIVE' ? <View style={styles.liveOnly}><Text style={styles.liveOnlyText}>Live now · View only</Text></View> : null}
       </View>
     </View>
@@ -533,18 +573,20 @@ function MyCompetitionCard({ row, onOpen }: { row: MyCompetition; onOpen: () => 
   const comp = row.competition as CompetitionLike;
   const activeCount = comp.activeCount ?? comp.participantCount ?? 0;
   const statusText = row.myStatus === 'WINNER' ? 'Winner' : row.myStatus === 'ELIMINATED' ? 'Eliminated' : 'Active';
-  const paymentText = row.paymentState === 'AWAITING_PAYMENT' ? 'Awaiting payment' : row.paymentState === 'PAID' ? 'Paid' : 'Not needed';
+  const paymentText = row.paymentState === 'AWAITING_PAYMENT' && comp.paymentMode === 'STRIPE' ? 'Pay online' : row.paymentState === 'AWAITING_PAYMENT' ? 'Awaiting payment' : row.paymentState === 'PAID' ? 'Paid' : 'Not needed';
   const actionRequired = row.paymentState === 'AWAITING_PAYMENT';
+  const clubAccent = comp.clubPrimaryColor ?? colors.brand;
 
   return (
-    <TouchableOpacity style={[styles.myCard, actionRequired ? styles.myCardAction : null]} onPress={onOpen}>
-      <View style={[styles.myStatusDot, row.myStatus === 'ELIMINATED' ? styles.dotRed : row.myStatus === 'WINNER' ? styles.dotYellow : styles.dotGreen]} />
+    <TouchableOpacity style={[styles.myCard, { borderColor: `${clubAccent}55` }, actionRequired ? styles.myCardAction : null]} onPress={onOpen}>
+      <View style={[styles.myStatusDot, row.myStatus === 'ELIMINATED' ? styles.dotRed : row.myStatus === 'WINNER' ? styles.dotYellow : styles.dotGreen, row.myStatus === 'ACTIVE' ? { backgroundColor: clubAccent } : null]} />
       <View style={styles.myCardBody}>
         <View style={styles.myTitleRow}>
+          {comp.clubLogoUrl ? <Image source={{ uri: comp.clubLogoUrl }} style={styles.myClubLogo} /> : null}
           <Text style={styles.myTitle} numberOfLines={1}>{comp.name}</Text>
-          {row.entryNumber ? <Text style={styles.entryBadge}>#{row.entryNumber}</Text> : null}
+          {row.entryNumber ? <Text style={[styles.entryBadge, { borderColor: `${clubAccent}55`, color: clubAccent }]}>{`#${row.entryNumber}`}</Text> : null}
         </View>
-        <Text style={[styles.myStatusText, actionRequired ? styles.actionText : null]}>{statusText}{actionRequired ? ' · Awaiting payment' : ''}</Text>
+        <Text style={[styles.myStatusText, { color: row.myStatus === 'ACTIVE' ? clubAccent : undefined }, actionRequired ? styles.actionText : null]}>{statusText}{actionRequired ? comp.paymentMode === 'STRIPE' ? ' · Pay online' : ' · Awaiting payment' : ''}</Text>
         <View style={styles.myChips}>
           <Text style={styles.myChip}>Players {comp.participantCount ?? 0}</Text>
           <Text style={styles.myChip}>Survivors {comp.status === 'ACTIVE' ? activeCount : '—'}</Text>
@@ -556,7 +598,7 @@ function MyCompetitionCard({ row, onOpen }: { row: MyCompetition; onOpen: () => 
           <Text style={styles.myMetaText}>Status: {statusLabel(comp.status)}</Text>
         </View>
       </View>
-      <Text style={styles.openLink}>Open</Text>
+      <Text style={[styles.openLink, { color: clubAccent }]}>Open</Text>
     </TouchableOpacity>
   );
 }
@@ -606,10 +648,15 @@ const styles = StyleSheet.create({
   searchClear: { color: '#94a3b8', fontSize: 22, paddingHorizontal: 4 },
   searchInput: { flex: 1, borderWidth: 1, borderColor: '#334155', backgroundColor: '#0f172a', color: colors.text, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
   availableControlsRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  joinCodeBox: { flex: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#0ea5e933', backgroundColor: '#0ea5e912', borderRadius: 13, padding: 6 },
+  joinCodeStack: { flex: 1, gap: 4 },
+  joinCodeBox: { minHeight: 44, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#0ea5e933', backgroundColor: '#0ea5e912', borderRadius: 13, padding: 6 },
   joinCodeInput: { flex: 1, color: '#f8fafc', fontSize: 12, paddingHorizontal: 8, paddingVertical: 6 },
   unlockButton: { borderRadius: 10, backgroundColor: '#38bdf8', paddingHorizontal: 12, paddingVertical: 8 },
+  unlockButtonDisabled: { opacity: 0.6 },
   unlockButtonText: { color: '#082f49', fontSize: 12, fontWeight: '900' },
+  joinCodeStatus: { color: '#93c5fd', fontSize: 11, fontWeight: '800', marginTop: 2 },
+  joinCodeStatusError: { color: '#fca5a5' },
+  joinCodeStatusSuccess: { color: '#86efac' },
   refineButton: { borderWidth: 1, borderColor: '#475569', backgroundColor: '#172033', borderRadius: 12, minHeight: 44, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   refineButtonActive: { borderColor: '#38bdf880', backgroundColor: '#0ea5e926' },
   refineText: { color: '#cbd5e1', fontSize: 12, fontWeight: '800' },
@@ -694,6 +741,7 @@ const styles = StyleSheet.create({
   dotYellow: { backgroundColor: '#facc15' },
   myCardBody: { flex: 1, minWidth: 0 },
   myTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  myClubLogo: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: '#ffffff26' },
   myTitle: { flex: 1, color: '#f8fafc', fontSize: 15, fontWeight: '900' },
   entryBadge: { color: '#d1d5db', backgroundColor: '#ffffff14', borderRadius: 999, overflow: 'hidden', paddingHorizontal: 7, paddingVertical: 2, fontSize: 10, fontWeight: '800' },
   myStatusText: { marginTop: 3, color: '#94a3b8', fontSize: 12, fontWeight: '700' },
