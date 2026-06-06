@@ -14,6 +14,16 @@ type SortBy = 'date' | 'players' | 'name';
 type StartWindow = 'ALL' | '7' | '14' | '30';
 type LandingMode = 'available' | 'mine';
 type MineFilter = 'ALL' | 'NEEDS_ACTION' | 'PICK_DUE' | 'AWAITING_PAYMENT' | 'UPCOMING' | 'ACTIVE' | 'ELIMINATED' | 'FINISHED';
+type ActivityTone = 'warn' | 'success' | 'danger' | 'brand' | 'neutral';
+type ActivityItem = {
+  id: string;
+  tone: ActivityTone;
+  label: string;
+  title: string;
+  detail: string;
+  competitionId: number;
+  priority: number;
+};
 
 type CompetitionLike = Competition & {
   visibility?: 'PUBLIC' | 'PRIVATE';
@@ -248,6 +258,90 @@ export default function CompetitionsScreen() {
   const mineUpcoming = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'UPCOMING');
   const mineEliminated = filteredMine.filter((row) => row.myStatus === 'ELIMINATED');
   const mineFinished = filteredMine.filter((row) => row.myStatus === 'WINNER' || row.competition.status === 'COMPLETED');
+  const activityItems = useMemo<ActivityItem[]>(() => {
+    const items = myRows.map((row) => {
+      const comp = row.competition as CompetitionLike;
+      const entrySuffix = (myEntryCountByCompetition.get(comp.id) ?? 0) > 1 && row.entryNumber ? ` · Entry #${row.entryNumber}` : '';
+      const baseId = `${row.participantId ?? comp.id}-${row.entryNumber ?? 0}`;
+      if (row.paymentState === 'AWAITING_PAYMENT') {
+        return {
+          id: `payment-${baseId}`,
+          tone: 'warn' as const,
+          label: comp.paymentMode === 'STRIPE' ? 'Payment required' : 'Awaiting payment',
+          title: comp.paymentMode === 'STRIPE' ? `Pay to enter ${comp.name}` : `${comp.name} needs payment confirmation`,
+          detail: comp.paymentMode === 'STRIPE' ? `Complete online payment${entrySuffix} before making picks.` : `The organiser still needs to mark this entry as paid${entrySuffix}.`,
+          competitionId: comp.id,
+          priority: 10,
+        };
+      }
+      if (row.myStatus === 'WINNER') {
+        return {
+          id: `winner-${baseId}`,
+          tone: 'success' as const,
+          label: 'Winner',
+          title: `You won ${comp.name}`,
+          detail: `This entry is the last survivor standing${entrySuffix}.`,
+          competitionId: comp.id,
+          priority: 30,
+        };
+      }
+      if (row.myStatus === 'ELIMINATED') {
+        return {
+          id: `eliminated-${baseId}`,
+          tone: 'danger' as const,
+          label: 'Eliminated',
+          title: `${comp.name}: run ended`,
+          detail: `Eliminated${row.eliminatedWeek ? ` in Gameweek ${row.eliminatedWeek}` : ''}${entrySuffix}. You can still follow the survivor table.`,
+          competitionId: comp.id,
+          priority: 40,
+        };
+      }
+      if (row.myStatus === 'ACTIVE' && comp.status === 'UPCOMING') {
+        return {
+          id: `pick-${baseId}`,
+          tone: 'warn' as const,
+          label: 'Pick due',
+          title: `Pick needed for ${comp.name}`,
+          detail: `Choose your team before the first lock${entrySuffix}.`,
+          competitionId: comp.id,
+          priority: 20,
+        };
+      }
+      if (row.myStatus === 'ACTIVE' && comp.status === 'ACTIVE') {
+        return {
+          id: `live-${baseId}`,
+          tone: 'brand' as const,
+          label: 'In play',
+          title: `${comp.name} is live`,
+          detail: `${comp.activeCount ?? 0} of ${comp.participantCount ?? 0} still standing${entrySuffix}.`,
+          competitionId: comp.id,
+          priority: 50,
+        };
+      }
+      if (comp.status === 'COMPLETED') {
+        return {
+          id: `complete-${baseId}`,
+          tone: 'neutral' as const,
+          label: 'Finished',
+          title: `${comp.name} has finished`,
+          detail: comp.winnerUsername ? `Winner: ${comp.winnerUsername}${entrySuffix}.` : `Final results are available${entrySuffix}.`,
+          competitionId: comp.id,
+          priority: 60,
+        };
+      }
+      return {
+        id: `joined-${baseId}`,
+        tone: 'neutral' as const,
+        label: 'Joined',
+        title: `${comp.name} is ready`,
+        detail: `Your entry is registered${entrySuffix}. First gameweek: ${formatDate(comp.firstGameweekDate ?? comp.startDate)}.`,
+        competitionId: comp.id,
+        priority: 70,
+      };
+    });
+    return items.sort((a, b) => a.priority - b.priority).slice(0, 6);
+  }, [myRows, myEntryCountByCompetition]);
+
   const visibleMineNeedsAction = mineFilter === 'ALL' || mineFilter === 'NEEDS_ACTION' || mineFilter === 'PICK_DUE' || mineFilter === 'AWAITING_PAYMENT'
     ? mineNeedsAction.filter((row) => {
         if (mineFilter === 'PICK_DUE') return row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'UPCOMING';
@@ -292,6 +386,10 @@ export default function CompetitionsScreen() {
             </View>
           </View>
         </View>
+
+        {activityItems.length > 0 ? (
+          <ActivityPanel items={activityItems} onOpen={(competitionId) => router.push(`/competitions/${competitionId}`)} />
+        ) : null}
 
         <View style={styles.webControlsCard}>
           <View style={styles.webModeTabs}>
@@ -473,6 +571,39 @@ function FilterStatTile({ label, value, active, onPress }: { label: string; valu
   );
 }
 
+function ActivityPanel({ items, onOpen }: { items: ActivityItem[]; onOpen: (competitionId: number) => void }) {
+  return (
+    <View style={styles.activityPanel}>
+      <View style={styles.activityHeaderRow}>
+        <View>
+          <Text style={styles.activityEyebrow}>Latest</Text>
+          <Text style={styles.activityTitle}>Activity / Updates</Text>
+        </View>
+        <Text style={styles.activityCount}>{items.length}</Text>
+      </View>
+      <View style={styles.activityList}>
+        {items.map((item) => <ActivityRow key={item.id} item={item} onOpen={() => onOpen(item.competitionId)} />)}
+      </View>
+    </View>
+  );
+}
+
+function ActivityRow({ item, onOpen }: { item: ActivityItem; onOpen: () => void }) {
+  return (
+    <TouchableOpacity style={styles.activityRow} onPress={onOpen} activeOpacity={0.86}>
+      <View style={[styles.activityToneDot, item.tone === 'warn' ? styles.activityWarn : item.tone === 'success' ? styles.activitySuccess : item.tone === 'danger' ? styles.activityDanger : item.tone === 'brand' ? styles.activityBrand : styles.activityNeutral]} />
+      <View style={styles.activityBody}>
+        <View style={styles.activityLabelRow}>
+          <Text style={[styles.activityLabel, item.tone === 'warn' ? styles.activityLabelWarn : item.tone === 'success' ? styles.activityLabelSuccess : item.tone === 'danger' ? styles.activityLabelDanger : item.tone === 'brand' ? styles.activityLabelBrand : null]}>{item.label}</Text>
+        </View>
+        <Text style={styles.activityItemTitle} numberOfLines={1}>{item.title}</Text>
+        <Text style={styles.activityDetail} numberOfLines={2}>{item.detail}</Text>
+      </View>
+      <Text style={styles.activityOpen}>Open</Text>
+    </TouchableOpacity>
+  );
+}
+
 function ModeTab({ label, hint, count, active, onPress }: { label: string; hint: string; count: number; active: boolean; onPress: () => void }) {
   return (
     <TouchableOpacity style={[styles.modeTab, active ? styles.modeTabActive : null]} onPress={onPress}>
@@ -640,6 +771,29 @@ const styles = StyleSheet.create({
   webMetricLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
   webMetricValue: { marginTop: 4, color: '#ffffff', fontSize: 20, fontWeight: '900' },
   webControlsCard: { borderWidth: 1, borderColor: '#ffffff1a', borderRadius: 22, backgroundColor: '#111827cc', padding: 12, gap: 12, shadowColor: '#020617', shadowOpacity: 0.32, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 3 },
+  activityPanel: { borderWidth: 1, borderColor: '#38bdf833', borderRadius: 22, backgroundColor: '#0f172acc', padding: 12, gap: 10, shadowColor: '#020617', shadowOpacity: 0.26, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
+  activityHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  activityEyebrow: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
+  activityTitle: { color: '#f8fafc', fontSize: 17, fontWeight: '900', marginTop: 2 },
+  activityCount: { overflow: 'hidden', color: '#bae6fd', borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91f', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, fontSize: 11, fontWeight: '900' },
+  activityList: { gap: 8 },
+  activityRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 10 },
+  activityToneDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
+  activityWarn: { backgroundColor: '#facc15' },
+  activitySuccess: { backgroundColor: '#22c55e' },
+  activityDanger: { backgroundColor: '#ef4444' },
+  activityBrand: { backgroundColor: '#38bdf8' },
+  activityNeutral: { backgroundColor: '#94a3b8' },
+  activityBody: { flex: 1, minWidth: 0 },
+  activityLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  activityLabel: { color: '#cbd5e1', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1 },
+  activityLabelWarn: { color: '#fde68a' },
+  activityLabelSuccess: { color: '#86efac' },
+  activityLabelDanger: { color: '#fca5a5' },
+  activityLabelBrand: { color: '#7dd3fc' },
+  activityItemTitle: { marginTop: 3, color: '#ffffff', fontSize: 13, fontWeight: '900' },
+  activityDetail: { marginTop: 3, color: '#94a3b8', fontSize: 11.5, lineHeight: 16 },
+  activityOpen: { color: '#7dd3fc', fontSize: 11, fontWeight: '900', marginTop: 2 },
   webModeTabs: { flexDirection: 'row', borderWidth: 1, borderColor: '#ffffff14', borderRadius: 18, backgroundColor: '#0f172acc', padding: 6, gap: 6 },
   statGrid: { marginTop: 14, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   statTile: { width: '48%', borderWidth: 1, borderColor: '#263244', borderRadius: 16, backgroundColor: '#111827', padding: 12 },

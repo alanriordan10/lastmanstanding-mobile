@@ -26,6 +26,18 @@ export default function GameweekSelectionsScreen() {
   });
 
   const selections = data?.selections ?? [];
+  const userEntryCounts = useMemo(() => {
+    const entriesByUser = new Map<number, Set<string>>();
+    selections.forEach((selection) => {
+      const entries = entriesByUser.get(selection.userId) ?? new Set<string>();
+      entries.add(selection.participantId != null ? `participant:${selection.participantId}` : `entry:${selection.entryNumber ?? 1}`);
+      entriesByUser.set(selection.userId, entries);
+    });
+    return new Map(Array.from(entriesByUser.entries()).map(([userId, entries]) => [userId, entries.size]));
+  }, [selections]);
+  const displayName = (selection: typeof selections[number]) => (userEntryCounts.get(selection.userId) ?? 0) > 1 && selection.entryNumber
+    ? `${selection.username} · Entry #${selection.entryNumber}`
+    : selection.username;
   const resolved = selections.filter((s) => s.outcome !== 'PENDING');
   const pending = selections.filter((s) => s.outcome === 'PENDING');
 
@@ -71,7 +83,7 @@ export default function GameweekSelectionsScreen() {
           {filtered.map((s, idx) => (
             <View key={`${s.userId}-${s.teamId}-${idx}`} style={styles.row}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.name}>{s.username}{s.entryNumber ? ` · Entry #${s.entryNumber}` : ''}</Text>
+                <Text style={styles.name}>{displayName(s)}</Text>
                 <MetaText>{s.teamShortName} · {s.source}</MetaText>
               </View>
               <StatusPill text={s.outcome} tone={s.outcome === 'ELIMINATED' ? 'danger' : s.outcome === 'PENDING' ? 'warn' : 'success'} />

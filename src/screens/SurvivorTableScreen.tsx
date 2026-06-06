@@ -51,6 +51,7 @@ export default function SurvivorTableScreen() {
   const [mobileMode, setMobileMode] = useState<MobileMode>('table');
   const [page, setPage] = useState(1);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [eliminatedWeekDropdownOpen, setEliminatedWeekDropdownOpen] = useState(false);
 
   const compQuery = useQuery({
     queryKey: ['competition', compId],
@@ -129,6 +130,7 @@ export default function SurvivorTableScreen() {
     setSearch('');
     setStatusFilter('ALL');
     setEliminatedWeekFilter('ALL');
+    setEliminatedWeekDropdownOpen(false);
     setPage(1);
   };
 
@@ -162,11 +164,36 @@ export default function SurvivorTableScreen() {
               <FilterPill key={status} label={`${status} (${counts[status]})`} active={statusFilter === status} onPress={() => { setStatusFilter(status); setPage(1); }} />
             ))}
           </View>
-          <View style={styles.filterRow}>
-            <FilterPill label="Elim: All" active={eliminatedWeekFilter === 'ALL'} onPress={() => { setEliminatedWeekFilter('ALL'); setPage(1); }} />
-            {eliminatedWeeks.map((week) => (
-              <FilterPill key={week} label={`Elim: GW${week}`} active={eliminatedWeekFilter === week} onPress={() => { setEliminatedWeekFilter(week); setPage(1); }} />
-            ))}
+          <View style={styles.dropdownBlock}>
+            <Text style={styles.dropdownLabel}>Eliminated gameweek</Text>
+            <TouchableOpacity
+              style={[styles.dropdownButton, eliminatedWeekDropdownOpen ? styles.dropdownButtonOpen : null]}
+              onPress={() => setEliminatedWeekDropdownOpen((open) => !open)}
+            >
+              <Text style={styles.dropdownButtonText}>{eliminatedWeekFilter === 'ALL' ? 'All eliminated weeks' : `Gameweek ${eliminatedWeekFilter}`}</Text>
+              <Text style={styles.dropdownChevron}>{eliminatedWeekDropdownOpen ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {eliminatedWeekDropdownOpen ? (
+              <View style={styles.dropdownMenu}>
+                <TouchableOpacity
+                  style={[styles.dropdownOption, eliminatedWeekFilter === 'ALL' ? styles.dropdownOptionActive : null]}
+                  onPress={() => { setEliminatedWeekFilter('ALL'); setEliminatedWeekDropdownOpen(false); setPage(1); }}
+                >
+                  <Text style={[styles.dropdownOptionText, eliminatedWeekFilter === 'ALL' ? styles.dropdownOptionTextActive : null]}>All eliminated weeks</Text>
+                </TouchableOpacity>
+                {eliminatedWeeks.length === 0 ? (
+                  <Text style={styles.dropdownEmpty}>No eliminated gameweeks yet</Text>
+                ) : eliminatedWeeks.map((week) => (
+                  <TouchableOpacity
+                    key={week}
+                    style={[styles.dropdownOption, eliminatedWeekFilter === week ? styles.dropdownOptionActive : null]}
+                    onPress={() => { setEliminatedWeekFilter(week); setEliminatedWeekDropdownOpen(false); setPage(1); }}
+                  >
+                    <Text style={[styles.dropdownOptionText, eliminatedWeekFilter === week ? styles.dropdownOptionTextActive : null]}>Gameweek {week}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
           </View>
           <View style={styles.modeRow}>
             <TouchableOpacity style={[styles.modeBtn, mobileMode === 'compact' ? styles.modeBtnActive : null]} onPress={() => setMobileMode('compact')}><Text style={[styles.modeBtnText, mobileMode === 'compact' ? styles.modeBtnTextActive : null]}>Compact</Text></TouchableOpacity>
@@ -292,8 +319,6 @@ export default function SurvivorTableScreen() {
           </ScrollView>
         ) : null}
 
-        {!isLoading && !error && mobileMode === 'table' ? <SurvivorLegend /> : null}
-
         {!isLoading && !error && totalPages > 1 ? (
           <View style={styles.paginationRow}>
             <TouchableOpacity style={styles.pageBtn} onPress={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}><Text style={styles.pageBtnText}>← Prev</Text></TouchableOpacity>
@@ -301,6 +326,8 @@ export default function SurvivorTableScreen() {
             <TouchableOpacity style={styles.pageBtn} onPress={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}><Text style={styles.pageBtnText}>Next →</Text></TouchableOpacity>
           </View>
         ) : null}
+        {!isLoading && !error && mobileMode === 'table' ? <SurvivorLegend /> : null}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -349,6 +376,18 @@ const styles = StyleSheet.create({
 
   searchInput: { borderWidth: 1, borderColor: '#33415599', backgroundColor: '#0b1220', color: colors.text, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  dropdownBlock: { marginTop: 10 },
+  dropdownLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.9, marginBottom: 6 },
+  dropdownButton: { borderWidth: 1, borderColor: '#33415599', backgroundColor: '#0b1220', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dropdownButtonOpen: { borderColor: '#0ea5e980', backgroundColor: '#0ea5e914' },
+  dropdownButtonText: { color: '#e2e8f0', fontSize: 13, fontWeight: '800' },
+  dropdownChevron: { color: '#7dd3fc', fontSize: 11, fontWeight: '900' },
+  dropdownMenu: { marginTop: 6, borderWidth: 1, borderColor: '#33415599', borderRadius: 12, backgroundColor: '#0f172a', overflow: 'hidden' },
+  dropdownOption: { paddingHorizontal: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#ffffff10' },
+  dropdownOptionActive: { backgroundColor: '#0ea5e922' },
+  dropdownOptionText: { color: '#cbd5e1', fontSize: 13, fontWeight: '700' },
+  dropdownOptionTextActive: { color: '#7dd3fc' },
+  dropdownEmpty: { color: '#94a3b8', fontSize: 12, paddingHorizontal: 12, paddingVertical: 11 },
   modeRow: { marginTop: 8, flexDirection: 'row', gap: 8 },
   modeBtn: { flex: 1, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
   modeBtnActive: { borderColor: '#0ea5e980', backgroundColor: '#0ea5e922' },

@@ -18,6 +18,8 @@ type PaymentIntentResponse = {
   amountCents: number;
 };
 
+type GameweekDisplayMode = 'cards' | 'compact';
+
 type PickStat = {
   teamId?: number;
   teamName?: string;
@@ -129,11 +131,12 @@ export default function CompetitionDetailScreen() {
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [lifelineForGwId, setLifelineForGwId] = useState<number | null>(null);
   const [lifelineClearedForGwId, setLifelineClearedForGwId] = useState<number | null>(null);
-  const [optimisticPick, setOptimisticPick] = useState<{ gwId: number; teamId: number; teamName: string; teamShortName: string } | null>(null);
+  const [optimisticPick, setOptimisticPick] = useState<{ gwId: number; teamId: number; teamName: string; teamShortName: string; useLifeline: boolean } | null>(null);
   const [mobileRulesOpen, setMobileRulesOpen] = useState(false);
   const [paymentActionError, setPaymentActionError] = useState<string | null>(null);
   const [paymentActionSuccess, setPaymentActionSuccess] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
+  const [gameweekDisplayMode, setGameweekDisplayMode] = useState<GameweekDisplayMode>('cards');
 
   const competitionQuery = useQuery({
     queryKey: ['competition', id],
@@ -195,7 +198,7 @@ export default function CompetitionDetailScreen() {
       useLifeline,
     }),
     onMutate: ({ gwId, teamId, teamName, teamShortName, useLifeline }) => {
-      setOptimisticPick({ gwId, teamId, teamName, teamShortName });
+      setOptimisticPick({ gwId, teamId, teamName, teamShortName, useLifeline });
       const queryKey = ['competition', id, 'my-status', selectedEntryId] as const;
       const previous = queryClient.getQueryData<MyStatusResponse>(queryKey);
       queryClient.setQueryData<MyStatusResponse>(queryKey, (current) => {
@@ -219,8 +222,11 @@ export default function CompetitionDetailScreen() {
       return { queryKey, previous };
     },
     onSuccess: (_response, variables) => {
-      if (!variables.useLifeline) {
-        setLifelineForGwId(null);
+      if (variables.useLifeline) {
+        setLifelineClearedForGwId(null);
+        setLifelineForGwId(variables.gwId);
+      } else {
+        setLifelineForGwId((current) => current === variables.gwId ? null : current);
       }
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] });
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] });
@@ -557,18 +563,105 @@ export default function CompetitionDetailScreen() {
   const hasWinner = Boolean(competition?.status === 'COMPLETED' || ((competition?.activeCount ?? 0) === 1 && (competition?.participantCount ?? 0) > 1));
   const latestResolvedPick = pickHistory.filter((pick) => pick.outcome && pick.outcome !== 'PENDING').sort((a, b) => b.weekNumber - a.weekNumber)[0] ?? null;
 
-  let pulseTitle = 'Competition pressure is building';
+  const pulseVariantSeed = Number(competition?.id ?? 0)
+    + ((latestNarrativeWeek?.weekNumber ?? currentGameweek?.weekNumber ?? 0) * 17)
+    + (weeklyEliminatedCount * 7)
+    + (biggestCasualty?.pickCount ?? mostBackedTeam?.pickCount ?? 0);
+  const pickPulseVariant = (options: string[], offset: number) => options[Math.abs(pulseVariantSeed + offset) % options.length];
+
+  let pulseTitle = pickPulseVariant([
+    'Competition pressure is building',
+    'The margins are tightening',
+    'Every round is starting to matter more',
+    'The field is entering pressure time',
+  ], 101);
   let pulseBody = competition?.status === 'UPCOMING'
-    ? 'Registration is open and the first real pressure point is the next lock.'
-    : 'The next lock is where this field starts splitting into survivors and exits.';
+    ? pickPulseVariant([
+        'Registration is open and the first real pressure point is the next lock.',
+        'Entries are still open, but urgency begins at the next lock deadline.',
+        'The competition is open; the first true decision point is the upcoming lock.',
+      ], 102)
+    : pickPulseVariant([
+        'The next pick window is where this competition starts to separate cautious players from survivors.',
+        'The next lock is where this field starts splitting into survivors and exits.',
+        'From the next pick onward, small calls start creating real separation.',
+      ], 103);
 
   if (hasWinner) {
     const winnerName = competition?.winnerUsername ?? (isWinner ? 'You' : 'One player');
     pulseTitle = isWinner ? 'You won this competition' : 'We have a winner';
     pulseBody = `${winnerName} is the last survivor standing${latestNarrativeWeek ? ` after Gameweek ${latestNarrativeWeek.weekNumber}` : ''}. Every round survived, every pick paid off.`;
   } else if (latestNarrativeWeek && biggestCasualty) {
-    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is catching the crowd out' : 'caught the crowd out'}`;
-    pulseBody = `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player' : 'players'} trusted ${biggestCasualty.teamShortName} and paid for it. ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor remains' : 'survivors remain'}.`;
+    const wn = latestNarrativeWeek.weekNumber;
+    const bigLoss = biggestCasualty.pickCount >= 3;
+    const titleOptions = bigLoss
+      ? [
+          narrativeWeekInProgress ? `Gameweek ${wn} is shaking the field` : `Gameweek ${wn} shook the field`,
+          narrativeWeekInProgress ? `Gameweek ${wn} has a costly upset` : `Gameweek ${wn} had a costly upset`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is catching the crowd out` : `Gameweek ${wn} caught the crowd out`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is making its mark` : `Gameweek ${wn} made its mark`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is punishing the popular pick` : `Gameweek ${wn} punished the popular pick`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is exposing the bandwagon` : `Gameweek ${wn} exposed the bandwagon`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is turning safe picks risky` : `Gameweek ${wn} turned safe picks risky`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is hitting the favourites hard` : `Gameweek ${wn} hit the favourites hard`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is opening the trap door` : `Gameweek ${wn} opened the trap door`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is rewriting the table` : `Gameweek ${wn} rewrote the table`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is testing the crowd` : `Gameweek ${wn} tested the crowd`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is turning popular picks sour` : `Gameweek ${wn} turned popular picks sour`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is delivering a heavy blow` : `Gameweek ${wn} delivered a heavy blow`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is cutting deep` : `Gameweek ${wn} cut deep`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is punishing confidence` : `Gameweek ${wn} punished confidence`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is creating damage` : `Gameweek ${wn} created damage`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is breaking the pack` : `Gameweek ${wn} broke the pack`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is making survival expensive` : `Gameweek ${wn} made survival expensive`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is catching the obvious pick` : `Gameweek ${wn} caught the obvious pick`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is changing the mood` : `Gameweek ${wn} changed the mood`,
+        ]
+      : [
+          narrativeWeekInProgress ? `Gameweek ${wn} has an early casualty` : `Gameweek ${wn} had a casualty`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is claiming victims` : `Gameweek ${wn} claimed a victim`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is stinging a few` : `Gameweek ${wn} stung a few`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is taking its toll` : `Gameweek ${wn} took its toll`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is trimming the field` : `Gameweek ${wn} trimmed the field`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is catching out a small group` : `Gameweek ${wn} caught out a small group`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is costing a few entries` : `Gameweek ${wn} cost a few entries`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is nudging players out` : `Gameweek ${wn} nudged players out`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is making quiet damage` : `Gameweek ${wn} made quiet damage`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is thinning the edges` : `Gameweek ${wn} thinned the edges`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is punishing the wrong call` : `Gameweek ${wn} punished the wrong call`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is proving awkward` : `Gameweek ${wn} proved awkward`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is taking names` : `Gameweek ${wn} took names`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is making every pick count` : `Gameweek ${wn} made every pick count`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is showing no free passes` : `Gameweek ${wn} showed no free passes`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is catching loose picks` : `Gameweek ${wn} caught loose picks`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is removing the unlucky` : `Gameweek ${wn} removed the unlucky`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is adding pressure` : `Gameweek ${wn} added pressure`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is creating small cracks` : `Gameweek ${wn} created small cracks`,
+          narrativeWeekInProgress ? `Gameweek ${wn} is keeping everyone honest` : `Gameweek ${wn} kept everyone honest`,
+        ];
+    pulseTitle = pickPulseVariant(titleOptions, 104);
+    pulseBody = pickPulseVariant([
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player' : 'players'} trusted ${biggestCasualty.teamShortName} and paid for it. ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor remains' : 'survivors remain'}.`,
+      `${biggestCasualty.teamShortName} caught ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry' : 'entries'} out, leaving ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor' : 'survivors'} in contention.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'pick' : 'picks'} on ${biggestCasualty.teamShortName} turned into exits. The field is now down to ${effectiveActiveCount}.`,
+      `${biggestCasualty.teamShortName} became the danger pick for ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry' : 'entries'}. ${effectiveActiveCount} still stand.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry went' : 'entries went'} with ${biggestCasualty.teamShortName}; the survivor count is now ${effectiveActiveCount}.`,
+      `The biggest damage came from ${biggestCasualty.teamShortName}, where ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'pick failed' : 'picks failed'} to hold.`,
+      `${biggestCasualty.teamShortName} carried the biggest risk this week, taking ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry' : 'entries'} with them.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player was' : 'players were'} on the wrong side of ${biggestCasualty.teamShortName}. ${effectiveActiveCount} remain alive.`,
+      `${biggestCasualty.teamShortName} was the costly call, cutting the field to ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor' : 'survivors'}.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'pick backed' : 'picks backed'} ${biggestCasualty.teamShortName}; that choice changed the shape of the table.`,
+      `${biggestCasualty.teamShortName} caused the main swing, with ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry' : 'entries'} falling away.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player trusted' : 'players trusted'} the same route through. ${biggestCasualty.teamShortName} did not deliver.`,
+      `The crowd pressure landed on ${biggestCasualty.teamShortName}; ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry paid' : 'entries paid'} the price.`,
+      `${biggestCasualty.teamShortName} was the round's trap door, leaving ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor' : 'survivors'} still in play.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry was' : 'entries were'} exposed by ${biggestCasualty.teamShortName}, and the field tightened again.`,
+      `${biggestCasualty.teamShortName} turned confidence into exits for ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player' : 'players'}.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'pick' : 'picks'} on ${biggestCasualty.teamShortName} failed, leaving ${effectiveActiveCount} to fight on.`,
+      `${biggestCasualty.teamShortName} delivered the week's biggest setback, removing ${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry' : 'entries'}.`,
+      `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'player followed' : 'players followed'} ${biggestCasualty.teamShortName}; the competition now has ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'survivor' : 'survivors'}.`,
+      `${biggestCasualty.teamShortName} was the pick that hurt most, and ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'entry is' : 'entries are'} still alive.`,
+    ], 105);
   } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate < 50) {
     pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is chaos' : 'was chaos'}`;
     pulseBody = `${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'player went' : 'players went'} out in the latest week. Only ${weeklySurvivalRate}% survived the round.`;
@@ -591,6 +684,351 @@ export default function CompetitionDetailScreen() {
     pulseTitle = `Your run ended in Gameweek ${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}`;
     pulseBody = 'You are out of this competition now, but you can still follow every remaining fixture, upset, and survivor.';
   }
+
+  const crowdReadTeamName = mostBackedTeam?.teamName ?? mostBackedTeam?.teamShortName ?? 'the crowd pick';
+  const crowdReadTitle = mostBackedTeam
+    ? pickPulseVariant([
+        `${mostBackedTeam.teamShortName} carried the weight`,
+        `${mostBackedTeam.teamShortName} drew the crowd`,
+        `${mostBackedTeam.teamShortName} became the safe lane`,
+        `${mostBackedTeam.teamShortName} pulled most of the picks`,
+        `${mostBackedTeam.teamShortName} was the crowd play`,
+        `${mostBackedTeam.teamShortName} led the pick board`,
+        `${mostBackedTeam.teamShortName} became the popular route`,
+        `${mostBackedTeam.teamShortName} took the spotlight`,
+        `${mostBackedTeam.teamShortName} attracted the pack`,
+        `${mostBackedTeam.teamShortName} was the main lean`,
+        `${mostBackedTeam.teamShortName} became the obvious call`,
+        `${mostBackedTeam.teamShortName} shaped the round`,
+        `${mostBackedTeam.teamShortName} owned the crowd share`,
+        `${mostBackedTeam.teamShortName} was where players gathered`,
+        `${mostBackedTeam.teamShortName} became the common path`,
+        `${mostBackedTeam.teamShortName} carried the room`,
+        `${mostBackedTeam.teamShortName} drew the heaviest backing`,
+        `${mostBackedTeam.teamShortName} was the table's favourite`,
+        `${mostBackedTeam.teamShortName} became the consensus pick`,
+        `${mostBackedTeam.teamShortName} set the weekly tone`,
+      ], 201)
+    : pickPulseVariant([
+        'Waiting for the first crowd signal',
+        'Crowd pattern will appear after lock',
+        'No crowd trend yet',
+        'Waiting for picks to settle',
+        'The crowd has not converged yet',
+        'No main pick has formed yet',
+        'The pick board is still quiet',
+        'No shared direction yet',
+        'Crowd movement is still pending',
+        'Waiting for a popular route',
+        'No dominant pick to read yet',
+        'The field has not shown its hand',
+        'Pick pressure has not formed yet',
+        'No crowd lean available yet',
+        'The main trend is still hidden',
+        'Waiting for the first big lean',
+        'No team has taken the crowd yet',
+        'The weekly pattern is still open',
+        'No consensus choice yet',
+        'The crowd read is still loading',
+      ], 202);
+  const crowdReadDetail = mostBackedTeam
+    ? pickPulseVariant([
+        `${mostBackedTeam.pickCount} players backed ${crowdReadTeamName} in ${narrativeWeekLabel ?? 'the latest resolved week'}${mostBackedTeam.percentage != null ? `, accounting for ${mostBackedTeam.percentage}% of tracked picks` : ''}.`,
+        `${crowdReadTeamName} led the week with ${mostBackedTeam.pickCount} tracked pick${mostBackedTeam.pickCount === 1 ? '' : 's'}${mostBackedTeam.percentage != null ? ` (${mostBackedTeam.percentage}%)` : ''}.`,
+        `${mostBackedTeam.pickCount} entr${mostBackedTeam.pickCount === 1 ? 'y' : 'ies'} lined up behind ${crowdReadTeamName}, making it the clearest crowd move.`,
+        `The biggest cluster formed around ${crowdReadTeamName}, with ${mostBackedTeam.pickCount} pick${mostBackedTeam.pickCount === 1 ? '' : 's'} recorded.`,
+        `${crowdReadTeamName} absorbed the most pressure this week with ${mostBackedTeam.pickCount} selection${mostBackedTeam.pickCount === 1 ? '' : 's'}.`,
+        `The room leaned toward ${crowdReadTeamName}; ${mostBackedTeam.pickCount} player${mostBackedTeam.pickCount === 1 ? '' : 's'} made that call.`,
+        `${crowdReadTeamName} was the shared answer for ${mostBackedTeam.pickCount} entr${mostBackedTeam.pickCount === 1 ? 'y' : 'ies'}.`,
+        `A clear crowd lane formed on ${crowdReadTeamName}, drawing ${mostBackedTeam.pickCount} tracked pick${mostBackedTeam.pickCount === 1 ? '' : 's'}.`,
+        `${mostBackedTeam.pickCount} player${mostBackedTeam.pickCount === 1 ? '' : 's'} chose ${crowdReadTeamName}, setting the main pressure point.`,
+        `${crowdReadTeamName} became the pick to watch after taking ${mostBackedTeam.pickCount} selection${mostBackedTeam.pickCount === 1 ? '' : 's'}.`,
+        `The field's strongest lean was ${crowdReadTeamName}, backed by ${mostBackedTeam.pickCount}.`,
+        `${crowdReadTeamName} carried the largest share of picks and now defines the round's crowd story.`,
+        `${mostBackedTeam.pickCount} pick${mostBackedTeam.pickCount === 1 ? '' : 's'} made ${crowdReadTeamName} the weekly benchmark.`,
+        `The crowd's main position landed on ${crowdReadTeamName}, with ${mostBackedTeam.pickCount} entr${mostBackedTeam.pickCount === 1 ? 'y' : 'ies'} committed.`,
+        `${crowdReadTeamName} was the biggest collective call, pulling ${mostBackedTeam.pickCount} player${mostBackedTeam.pickCount === 1 ? '' : 's'} into the same lane.`,
+        `No other team drew more attention than ${crowdReadTeamName}, which had ${mostBackedTeam.pickCount} pick${mostBackedTeam.pickCount === 1 ? '' : 's'}.`,
+        `${crowdReadTeamName} became the round's common ground for ${mostBackedTeam.pickCount} entr${mostBackedTeam.pickCount === 1 ? 'y' : 'ies'}.`,
+        `The highest concentration of picks sat with ${crowdReadTeamName}: ${mostBackedTeam.pickCount} tracked selection${mostBackedTeam.pickCount === 1 ? '' : 's'}.`,
+        `${crowdReadTeamName} drew the heaviest backing and became the result everyone was watching.`,
+        `${mostBackedTeam.pickCount} player${mostBackedTeam.pickCount === 1 ? '' : 's'} made ${crowdReadTeamName} the crowd's headline pick.`,
+      ], 203)
+    : pickPulseVariant([
+        'Once a gameweek locks, this area highlights where the crowd moved together.',
+        'After lock, this tracks which team absorbed the largest share of picks.',
+        "As soon as picks finalize, this card will show the crowd's main position.",
+        'When entries commit, the strongest pick trend will appear here.',
+        'This card waits for a locked gameweek before reading the field.',
+        'The first clear crowd movement will be summarized here.',
+        'Once selections are visible, the main team lean will be shown.',
+        'This insight needs locked picks before it can identify the crowd route.',
+        'After the deadline, the most popular selection will surface here.',
+        'The field has not produced a readable trend yet.',
+        'When the round settles, this will show where the largest group went.',
+        'This panel will highlight the team carrying the most pick pressure.',
+        'No pick cluster is available yet, but the trend will appear after lock.',
+        'The crowd read starts once enough selections are locked in.',
+        'This is where the weekly consensus pick will be tracked.',
+        'The app is waiting for a meaningful pick pattern.',
+        'No crowd lane can be measured until the week locks.',
+        'Once picks are revealed, this card will show the dominant route.',
+        'The first major backing pattern will appear here.',
+        'This panel turns active when the field starts moving together.',
+      ], 204);
+  const knockoutTeamName = biggestCasualty?.teamName ?? biggestCasualty?.teamShortName ?? 'the danger team';
+  const knockoutTitle = biggestCasualty
+    ? pickPulseVariant([
+        `${biggestCasualty.teamShortName} was the trapdoor`,
+        `${biggestCasualty.teamShortName} triggered the biggest hit`,
+        `${biggestCasualty.teamShortName} turned costly`,
+        `${biggestCasualty.teamShortName} caused the key wipeout`,
+        `${biggestCasualty.teamShortName} punished the field`,
+        `${biggestCasualty.teamShortName} delivered the damage`,
+        `${biggestCasualty.teamShortName} became the exit route`,
+        `${biggestCasualty.teamShortName} created the biggest swing`,
+        `${biggestCasualty.teamShortName} hurt the most entries`,
+        `${biggestCasualty.teamShortName} broke the pack`,
+        `${biggestCasualty.teamShortName} caused the sharpest drop`,
+        `${biggestCasualty.teamShortName} was the costly mistake`,
+        `${biggestCasualty.teamShortName} changed the table`,
+        `${biggestCasualty.teamShortName} exposed the risk`,
+        `${biggestCasualty.teamShortName} became the week's blow`,
+        `${biggestCasualty.teamShortName} cut into the field`,
+        `${biggestCasualty.teamShortName} made the biggest dent`,
+        `${biggestCasualty.teamShortName} caught players out`,
+        `${biggestCasualty.teamShortName} caused the main exit wave`,
+        `${biggestCasualty.teamShortName} was the knockout point`,
+      ], 205)
+    : weeklyEliminatedCount > 0
+      ? pickPulseVariant([
+          `${weeklyEliminatedCount} new exits`,
+          `${weeklyEliminatedCount} players fell`,
+          `${weeklyEliminatedCount} entries dropped`,
+          `${weeklyEliminatedCount} survivors were lost`,
+          `${weeklyEliminatedCount} runs ended`,
+          `${weeklyEliminatedCount} exits confirmed`,
+          `${weeklyEliminatedCount} players left the race`,
+          `${weeklyEliminatedCount} entries are out`,
+          `${weeklyEliminatedCount} knockout hits`,
+          `${weeklyEliminatedCount} players were removed`,
+          `${weeklyEliminatedCount} fewer standing`,
+          `${weeklyEliminatedCount} places cleared`,
+          `${weeklyEliminatedCount} eliminations landed`,
+          `${weeklyEliminatedCount} entries failed to advance`,
+          `${weeklyEliminatedCount} players missed survival`,
+          `${weeklyEliminatedCount} fell this week`,
+          `${weeklyEliminatedCount} exits shaped the week`,
+          `${weeklyEliminatedCount} players lost ground`,
+          `${weeklyEliminatedCount} entries were cut`,
+          `${weeklyEliminatedCount} knockout decisions landed`,
+        ], 206)
+      : pickPulseVariant([
+          'No major casualty yet',
+          'No clear knockout swing yet',
+          'No mass exit team yet',
+          'No major trapdoor so far',
+          'No big wipeout yet',
+          'No knockout wave yet',
+          'No team has broken the field',
+          'No damaging pick yet',
+          'No heavy exit source yet',
+          'No single blow has landed',
+          'No major field cut yet',
+          'No sharp elimination trend',
+          'No costly team stands out',
+          'No clear danger pick yet',
+          'No decisive setback yet',
+          'No elimination cluster yet',
+          'No big table shift yet',
+          'No trapdoor has opened yet',
+          'No knockout headline yet',
+          'No heavy damage recorded',
+        ], 207);
+  const knockoutDetail = biggestCasualty
+    ? pickPulseVariant([
+        `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry went' : 'entries went'} out backing ${knockoutTeamName}.`,
+        `${knockoutTeamName} eliminated ${biggestCasualty.pickCount} entr${biggestCasualty.pickCount === 1 ? 'y' : 'ies'} in the sharpest swing.`,
+        `${biggestCasualty.pickCount} player${biggestCasualty.pickCount === 1 ? '' : 's'} were knocked out on ${knockoutTeamName}.`,
+        `${knockoutTeamName} created the round's biggest damage with ${biggestCasualty.pickCount} exit${biggestCasualty.pickCount === 1 ? '' : 's'}.`,
+        `${biggestCasualty.pickCount} entr${biggestCasualty.pickCount === 1 ? 'y' : 'ies'} trusted ${knockoutTeamName} and left the race.`,
+        `${knockoutTeamName} was the pick that hurt most, removing ${biggestCasualty.pickCount}.`,
+        `${biggestCasualty.pickCount} selection${biggestCasualty.pickCount === 1 ? '' : 's'} on ${knockoutTeamName} became eliminations.`,
+        `The biggest knockout source was ${knockoutTeamName}, with ${biggestCasualty.pickCount} exit${biggestCasualty.pickCount === 1 ? '' : 's'}.`,
+        `${knockoutTeamName} turned into the danger result for ${biggestCasualty.pickCount} player${biggestCasualty.pickCount === 1 ? '' : 's'}.`,
+        `${biggestCasualty.pickCount} run${biggestCasualty.pickCount === 1 ? '' : 's'} ended because ${knockoutTeamName} did not deliver.`,
+        `${knockoutTeamName} caused the clearest table shift, taking out ${biggestCasualty.pickCount}.`,
+        `${biggestCasualty.pickCount} entr${biggestCasualty.pickCount === 1 ? 'y was' : 'ies were'} exposed by the ${knockoutTeamName} pick.`,
+        `${knockoutTeamName} became the week's knockout marker with ${biggestCasualty.pickCount} failed pick${biggestCasualty.pickCount === 1 ? '' : 's'}.`,
+        `${biggestCasualty.pickCount} player${biggestCasualty.pickCount === 1 ? '' : 's'} went down on the same call: ${knockoutTeamName}.`,
+        `${knockoutTeamName} produced the main elimination cluster of the round.`,
+        `${biggestCasualty.pickCount} pick${biggestCasualty.pickCount === 1 ? '' : 's'} on ${knockoutTeamName} changed the survivor picture.`,
+        `${knockoutTeamName} delivered the blow that removed ${biggestCasualty.pickCount} entr${biggestCasualty.pickCount === 1 ? 'y' : 'ies'}.`,
+        `${biggestCasualty.pickCount} player${biggestCasualty.pickCount === 1 ? '' : 's'} backed ${knockoutTeamName}; none of those picks survived.`,
+        `${knockoutTeamName} was the round's hardest lesson for ${biggestCasualty.pickCount} entr${biggestCasualty.pickCount === 1 ? 'y' : 'ies'}.`,
+        `${biggestCasualty.pickCount} exit${biggestCasualty.pickCount === 1 ? '' : 's'} came through ${knockoutTeamName}, the biggest hit on the board.`,
+      ], 208)
+    : weeklyEliminatedCount > 0
+      ? pickPulseVariant([
+          `${narrativeWeekLabel ?? 'The latest week'} removed ${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'entry' : 'entries'} from the field.`,
+          `${weeklyEliminatedCount} elimination${weeklyEliminatedCount === 1 ? '' : 's'} landed, but no single team carried the full damage.`,
+          `The field lost ${weeklyEliminatedCount}, spread across the week's resolved picks.`,
+          `${weeklyEliminatedCount} player${weeklyEliminatedCount === 1 ? '' : 's'} left the race in the latest snapshot.`,
+          `The round created ${weeklyEliminatedCount} exit${weeklyEliminatedCount === 1 ? '' : 's'} without one obvious trapdoor.`,
+          `${weeklyEliminatedCount} run${weeklyEliminatedCount === 1 ? '' : 's'} ended as the table tightened.`,
+          `There were ${weeklyEliminatedCount} knockout result${weeklyEliminatedCount === 1 ? '' : 's'} to account for this week.`,
+          `${weeklyEliminatedCount} fewer entries are standing after the latest update.`,
+          `The latest round trimmed ${weeklyEliminatedCount} from the survivor count.`,
+          `${weeklyEliminatedCount} player${weeklyEliminatedCount === 1 ? '' : 's'} failed to advance in the current snapshot.`,
+          `${weeklyEliminatedCount} exit${weeklyEliminatedCount === 1 ? '' : 's'} shifted the table, even without a single mass casualty.`,
+          `The knockout pressure removed ${weeklyEliminatedCount} entr${weeklyEliminatedCount === 1 ? 'y' : 'ies'} this week.`,
+          `${weeklyEliminatedCount} selection${weeklyEliminatedCount === 1 ? '' : 's'} ended in elimination across the week.`,
+          `${weeklyEliminatedCount} player${weeklyEliminatedCount === 1 ? '' : 's'} were cut from the field.`,
+          `${weeklyEliminatedCount} entr${weeklyEliminatedCount === 1 ? 'y' : 'ies'} failed the survival check.`,
+          `The survivor table got ${weeklyEliminatedCount} spot${weeklyEliminatedCount === 1 ? '' : 's'} lighter.`,
+          `${weeklyEliminatedCount} result-driven exit${weeklyEliminatedCount === 1 ? '' : 's'} came through this round.`,
+          `${weeklyEliminatedCount} player${weeklyEliminatedCount === 1 ? '' : 's'} are now out after the latest week.`,
+          `The latest resolved picture shows ${weeklyEliminatedCount} new elimination${weeklyEliminatedCount === 1 ? '' : 's'}.`,
+          `${weeklyEliminatedCount} entr${weeklyEliminatedCount === 1 ? 'y has' : 'ies have'} dropped from contention.`,
+        ], 209)
+      : pickPulseVariant([
+          'When fixtures resolve, this card highlights the biggest elimination source.',
+          'Once results land, this surfaces the team that took the most players down.',
+          "As results come in, this will track the round's biggest elimination source.",
+          'The first clear knockout blow will be shown here.',
+          'This card waits for a result strong enough to move the field.',
+          'No knockout detail is available until selections resolve.',
+          'The biggest elimination source will appear here after the week settles.',
+          'This panel tracks where the damage comes from.',
+          'When a team causes exits, the details will show here.',
+          'The main trapdoor is still waiting to be identified.',
+          'This card turns active once eliminations can be attributed.',
+          'The next major casualty will be summarized here.',
+          'No exit source has separated from the pack yet.',
+          'The round has not produced a clear knockout story yet.',
+          'This insight will name the team behind the biggest hit.',
+          'Once picks fail, the main source of damage will appear.',
+          'The elimination pattern is not readable yet.',
+          'This is where the biggest failed pick gets called out.',
+          'No knockout wave has formed yet.',
+          'The field has not produced a clear danger team yet.',
+        ], 210);
+  const contrarianTeamName = contrarianSurvivor?.teamName ?? contrarianSurvivor?.teamShortName ?? 'the low-owned pick';
+  const contrarianTitle = contrarianSurvivor
+    ? pickPulseVariant([
+        `${contrarianSurvivor.teamShortName} rewarded nerve`,
+        `${contrarianSurvivor.teamShortName} paid off for the brave`,
+        `${contrarianSurvivor.teamShortName} delivered a contrarian win`,
+        `${contrarianSurvivor.teamShortName} proved the sharp play`,
+        `${contrarianSurvivor.teamShortName} gave outsiders an edge`,
+        `${contrarianSurvivor.teamShortName} backed the bold`,
+        `${contrarianSurvivor.teamShortName} rewarded the minority`,
+        `${contrarianSurvivor.teamShortName} created separation`,
+        `${contrarianSurvivor.teamShortName} helped the brave survive`,
+        `${contrarianSurvivor.teamShortName} made the unpopular pick pay`,
+        `${contrarianSurvivor.teamShortName} became the smart outsider`,
+        `${contrarianSurvivor.teamShortName} gave a small group daylight`,
+        `${contrarianSurvivor.teamShortName} beat the crowd path`,
+        `${contrarianSurvivor.teamShortName} gave low ownership value`,
+        `${contrarianSurvivor.teamShortName} rewarded the risk takers`,
+        `${contrarianSurvivor.teamShortName} broke from the pack`,
+        `${contrarianSurvivor.teamShortName} delivered against the trend`,
+        `${contrarianSurvivor.teamShortName} made the brave look sharp`,
+        `${contrarianSurvivor.teamShortName} gave outsiders a lift`,
+        `${contrarianSurvivor.teamShortName} proved the quiet route`,
+      ], 211)
+    : pickPulseVariant([
+        'No contrarian hero yet',
+        'No low-owned breakout yet',
+        'No outsider pick has separated yet',
+        'No clear contrarian edge yet',
+        'Waiting for a bold low-owned win',
+        'No brave pick has paid off yet',
+        'No minority route has broken through',
+        'No low-owned survivor story yet',
+        'No unpopular pick has created value',
+        'No sharp outsider call yet',
+        'Waiting for someone to beat the crowd',
+        'No quiet route has worked yet',
+        'No bold pick has separated the field',
+        'No low-owned team has rewarded trust',
+        'No contrarian move to report yet',
+        'No outsider edge is visible yet',
+        'No small-group pick has landed yet',
+        'No anti-crowd win yet',
+        'No hidden value pick yet',
+        'Waiting for the brave call',
+      ], 212);
+  const contrarianDetail = contrarianSurvivor
+    ? pickPulseVariant([
+        `Only ${contrarianSurvivor.pickCount} ${contrarianSurvivor.pickCount === 1 ? 'player' : 'players'} trusted ${contrarianTeamName}, and they stayed alive.`,
+        `${contrarianTeamName} was backed by just ${contrarianSurvivor.pickCount}, and that minority call survived.`,
+        `A small group of ${contrarianSurvivor.pickCount} went with ${contrarianTeamName} and gained ground by staying in.`,
+        `${contrarianTeamName} kept ${contrarianSurvivor.pickCount} low-owned entr${contrarianSurvivor.pickCount === 1 ? 'y' : 'ies'} alive.`,
+        `${contrarianSurvivor.pickCount} player${contrarianSurvivor.pickCount === 1 ? '' : 's'} avoided the crowd and got rewarded by ${contrarianTeamName}.`,
+        `The unpopular route through ${contrarianTeamName} worked for ${contrarianSurvivor.pickCount}.`,
+        `${contrarianTeamName} gave a small group survival while the wider field looked elsewhere.`,
+        `Only ${contrarianSurvivor.pickCount} backed ${contrarianTeamName}, making it the sharpest low-owned success.`,
+        `${contrarianTeamName} became the quiet edge for ${contrarianSurvivor.pickCount} survivor${contrarianSurvivor.pickCount === 1 ? '' : 's'}.`,
+        `${contrarianSurvivor.pickCount} player${contrarianSurvivor.pickCount === 1 ? '' : 's'} took the less crowded path and survived.`,
+        `${contrarianTeamName} rewarded the players willing to step away from the main trend.`,
+        `The low-owned play was ${contrarianTeamName}, and ${contrarianSurvivor.pickCount} entr${contrarianSurvivor.pickCount === 1 ? 'y' : 'ies'} benefited.`,
+        `${contrarianTeamName} created a small but useful separation point.`,
+        `${contrarianSurvivor.pickCount} player${contrarianSurvivor.pickCount === 1 ? '' : 's'} found value away from the crowd with ${contrarianTeamName}.`,
+        `The bold call on ${contrarianTeamName} kept ${contrarianSurvivor.pickCount} survivor${contrarianSurvivor.pickCount === 1 ? '' : 's'} moving.`,
+        `${contrarianTeamName} turned a quiet pick into a meaningful edge.`,
+        `A minority pick on ${contrarianTeamName} gave ${contrarianSurvivor.pickCount} entr${contrarianSurvivor.pickCount === 1 ? 'y' : 'ies'} breathing room.`,
+        `${contrarianTeamName} proved that the least crowded route can still be the right one.`,
+        `${contrarianSurvivor.pickCount} player${contrarianSurvivor.pickCount === 1 ? '' : 's'} survived by trusting ${contrarianTeamName} when few others did.`,
+        `${contrarianTeamName} delivered the round's best low-owned survival story.`,
+      ], 213)
+    : pickPulseVariant([
+        'If a low-owned choice breaks right, this is where that edge appears.',
+        'When a low-owned team gets players through, it shows up here as the smartest unpopular move.',
+        'This card lights up when a minority pick survives and creates separation.',
+        'The first successful anti-crowd call will be shown here.',
+        'No low-owned pick has produced a clear edge yet.',
+        'This waits for a small group to beat the main trend.',
+        'When a brave selection survives, the detail will appear here.',
+        "The next unpopular pick that works will become this card's story.",
+        'This panel tracks the value of avoiding the crowd.',
+        'A low-owned survivor route has not appeared yet.',
+        'Once a minority pick advances, this insight will call it out.',
+        'No bold pick has created separation so far.',
+        'This is where the smartest unpopular move gets highlighted.',
+        'The field has not produced a contrarian winner yet.',
+        'A brave low-owned choice will show here if it lands.',
+        'This panel waits for an outsider pick to survive.',
+        'No minority call has moved the leaderboard yet.',
+        'When the quiet route works, this card will surface it.',
+        'No anti-crowd advantage is visible at the moment.',
+        'The first brave pick that pays off will be tracked here.',
+      ], 214);
+
+
+  useEffect(() => {
+    try {
+      const saved = globalThis?.localStorage?.getItem('lms.mobile.gameweekDisplayMode');
+      if (saved === 'cards' || saved === 'compact') setGameweekDisplayMode(saved);
+    } catch {}
+  }, []);
+
+  const updateGameweekDisplayMode = (mode: GameweekDisplayMode) => {
+    setGameweekDisplayMode(mode);
+    try {
+      globalThis?.localStorage?.setItem('lms.mobile.gameweekDisplayMode', mode);
+    } catch {}
+    if (mode === 'compact') {
+      setCollapsedWeeks(() => {
+        const next = new Set<number>();
+        const currentWeekNumber = currentGameweek?.weekNumber ?? gameweeks[gameweeks.length - 1]?.weekNumber;
+        for (const gw of gameweeks) {
+          if (gw.weekNumber !== currentWeekNumber) next.add(gw.weekNumber);
+        }
+        return next;
+      });
+    }
+  };
 
   const getTeamPickStat = (gameweekId: number, teamId: number, teamShortName: string, teamName: string) => {
     const teamMap = pickStatsByGameweek.get(gameweekId);
@@ -838,9 +1276,9 @@ export default function CompetitionDetailScreen() {
         </TouchableOpacity>
         {mobileInsightsOpen ? (
           <View style={styles.insightStack}>
-            <InsightTile tone="brand" eyebrow="Crowd read" title={mostBackedTeam ? `${mostBackedTeam.teamShortName} drew the crowd` : 'Waiting for the first crowd signal'} detail={mostBackedTeam ? `${mostBackedTeam.pickCount} players backed ${mostBackedTeam.teamName ?? mostBackedTeam.teamShortName} in ${narrativeWeekLabel ?? 'the latest resolved week'}${mostBackedTeam.percentage != null ? `, accounting for ${mostBackedTeam.percentage}% of tracked picks` : ''}.` : 'Once a gameweek locks, this area highlights where the crowd moved together.'} />
-            <InsightTile tone="danger" eyebrow="Knockout blow" title={biggestCasualty ? `${biggestCasualty.teamShortName} was the trapdoor` : weeklyEliminatedCount > 0 ? `${weeklyEliminatedCount} new exits` : 'No major casualty yet'} detail={biggestCasualty ? `${biggestCasualty.pickCount} ${biggestCasualty.pickCount === 1 ? 'entry went' : 'entries went'} out backing ${biggestCasualty.teamName ?? biggestCasualty.teamShortName}.` : weeklyEliminatedCount > 0 ? `${narrativeWeekLabel ?? 'The latest week'} removed ${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'entry' : 'entries'} from the field.` : 'When fixtures resolve, this card highlights the biggest elimination source.'} />
-            <InsightTile tone="success" eyebrow="Contrarian edge" title={contrarianSurvivor ? `${contrarianSurvivor.teamShortName} rewarded nerve` : 'Waiting for a bold low-owned win'} detail={contrarianSurvivor ? `Only ${contrarianSurvivor.pickCount} ${contrarianSurvivor.pickCount === 1 ? 'player' : 'players'} trusted ${contrarianSurvivor.teamName ?? contrarianSurvivor.teamShortName}, and they stayed alive.` : 'If a low-owned choice breaks right, this is where that edge appears.'} />
+            <InsightTile tone="brand" eyebrow="Crowd read" title={crowdReadTitle} detail={crowdReadDetail} />
+            <InsightTile tone="danger" eyebrow="Knockout blow" title={knockoutTitle} detail={knockoutDetail} />
+            <InsightTile tone="success" eyebrow="Contrarian edge" title={contrarianTitle} detail={contrarianDetail} />
           </View>
         ) : null}
 
@@ -938,6 +1376,20 @@ export default function CompetitionDetailScreen() {
           </View>
         ) : null}
 
+        <View style={styles.gameweekDisplayPanel}>
+          <View style={styles.gameweekDisplayCopy}>
+            <Text style={styles.gameweekDisplayEyebrow}>Preference</Text>
+            <Text style={styles.gameweekDisplayTitle}>Gameweek display</Text>
+          </View>
+          <View style={styles.gameweekDisplaySwitch}>
+            {(['cards', 'compact'] as const).map((mode) => (
+              <TouchableOpacity key={mode} style={[styles.gameweekDisplayOption, gameweekDisplayMode === mode ? styles.gameweekDisplayOptionActive : null]} onPress={() => updateGameweekDisplayMode(mode)}>
+                <Text style={[styles.gameweekDisplayOptionText, gameweekDisplayMode === mode ? styles.gameweekDisplayOptionTextActive : null]}>{mode === 'cards' ? 'Cards' : 'Compact'}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
         <View style={styles.gameweeksSection}>
           {fixturesQuery.isLoading ? <MetaText>Loading fixtures...</MetaText> : null}
           {gameweeks.map((gw) => {
@@ -946,14 +1398,17 @@ export default function CompetitionDetailScreen() {
             const isCompleted = gw.gameweekStatus === 'COMPLETED' || gw.fixtures.every((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED');
             const savedPickForGw = myPickByGameweek.get(gw.gameweekId);
             const optimisticPickForGw = optimisticPick?.gwId === gw.gameweekId
-              ? { teamId: optimisticPick.teamId, teamName: optimisticPick.teamName, teamShortName: optimisticPick.teamShortName, locked: false, useLifeline: lifelineForGwId === gw.gameweekId, outcome: 'PENDING' }
+              ? { teamId: optimisticPick.teamId, teamName: optimisticPick.teamName, teamShortName: optimisticPick.teamShortName, locked: false, useLifeline: optimisticPick.useLifeline, outcome: 'PENDING' }
               : null;
             const myPickForGw = optimisticPickForGw ?? savedPickForGw;
             const lifelineChecked = pendingLifelineGameweekId === gw.gameweekId;
             const lifelineSelectedElsewhere = Boolean(pendingLifelineGameweekId && pendingLifelineGameweekId !== gw.gameweekId);
-            const lifelineDisabled = isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
+            const lifelineDisabled = isEliminated || isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
+            const fixtureCount = gw.fixtures.length;
+            const resolvedFixtureCount = gw.fixtures.filter((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED').length;
+            const compactMode = gameweekDisplayMode === 'compact';
             return (
-              <View key={gw.weekNumber} style={[styles.webGameweekCard, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
+              <View key={gw.weekNumber} style={[styles.webGameweekCard, gameweekDisplayMode === 'compact' ? styles.webGameweekCardCompact : null, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
                 <TouchableOpacity
                   style={styles.webGameweekHeader}
                   onPress={() => setCollapsedWeeks((prev) => {
@@ -965,7 +1420,7 @@ export default function CompetitionDetailScreen() {
                 >
                   <View style={styles.webGameweekHeaderText}>
                     <View style={styles.webGwTitleRow}>
-                      <Text style={styles.webGameweekTitle}>Gameweek {gw.weekNumber}</Text>
+                      <Text style={[styles.webGameweekTitle, gameweekDisplayMode === 'compact' ? styles.webGameweekTitleCompact : null]}>Gameweek {gw.weekNumber}</Text>
                       <Text style={[styles.webGwBadge, isCompleted ? styles.webGwBadgeGray : isLocked ? styles.webGwBadgeRed : styles.webGwBadgeYellow]}>{isCompleted ? 'Completed' : isLocked ? 'Locked' : `Locks ${distanceToNow(gw.lockAt)}`}</Text>
                     </View>
                     {collapsed && myPickForGw ? <Text style={styles.webCollapsedPick}>Selected: <Text style={[styles.webCollapsedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text></Text> : null}
@@ -973,6 +1428,15 @@ export default function CompetitionDetailScreen() {
                   </View>
                   <View style={[styles.chevronBox, !collapsed ? styles.chevronBoxOpen : null]}><Text style={styles.chevron}>{collapsed ? '▼' : '▲'}</Text></View>
                 </TouchableOpacity>
+
+                {compactMode ? (
+                  <View style={styles.compactGwSummary}>
+                    <Text style={styles.compactGwSummaryText}>{fixtureCount} fixtures</Text>
+                    <Text style={styles.compactGwSummaryText}>{resolvedFixtureCount}/{fixtureCount} resolved</Text>
+                    {myPickForGw ? <Text style={styles.compactGwSummaryPick}>Pick: {myPickForGw.teamShortName}</Text> : null}
+                    {lifelineChecked ? <Text style={styles.compactGwSummaryLifeline}>Lifeline</Text> : null}
+                  </View>
+                ) : null}
 
                 {!collapsed && myPickForGw ? (
                   <Text style={styles.webExpandedPick}>Your pick: <Text style={[styles.webExpandedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text>{myPickForGw.outcome && myPickForGw.outcome !== 'PENDING' ? ` · ${outcomeText(myPickForGw.outcome)}` : ''}</Text>
@@ -986,7 +1450,7 @@ export default function CompetitionDetailScreen() {
                 ) : null}
 
                 {!collapsed ? (
-                  <View style={styles.fixturesStack}>
+                  <View style={[styles.fixturesStack, gameweekDisplayMode === 'compact' ? styles.fixturesStackCompact : null]}>
                     {competition?.lifelineEnabled && isParticipant && !isWinner ? (
                       <TouchableOpacity
                         disabled={lifelineDisabled}
@@ -999,15 +1463,15 @@ export default function CompetitionDetailScreen() {
                             setLifelineForGwId(gw.gameweekId);
                           }
                         }}
-                        style={[styles.lifelineBox, lifelineChecked ? styles.lifelineBoxSelected : null, lifelineDisabled && !lifelineChecked ? styles.lifelineBoxDisabled : null]}
+                        style={[styles.lifelineBox, compactMode ? styles.lifelineBoxCompact : null, lifelineChecked ? styles.lifelineBoxSelected : null, lifelineDisabled && !lifelineChecked ? styles.lifelineBoxDisabled : null]}
                       >
                         <View style={styles.lifelineCheckboxRow}>
                           <View style={[styles.lifelineCheckbox, lifelineChecked ? styles.lifelineCheckboxChecked : null, lifelineDisabled && !lifelineChecked ? styles.lifelineCheckboxDisabled : null]}>
                             {lifelineChecked ? <Text style={styles.lifelineCheckboxTick}>✓</Text> : null}
                           </View>
                           <View style={styles.lifelineTextCol}>
-                            <Text style={styles.lifelineBoxText}>{participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
-                            {!participant?.lifelineUsed ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
+                            <Text style={styles.lifelineBoxText}>{isEliminated ? 'Lifeline unavailable because this entry is eliminated' : participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
+                            {!participant?.lifelineUsed && !isEliminated && !compactMode ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
                           </View>
                         </View>
                       </TouchableOpacity>
@@ -1025,10 +1489,10 @@ export default function CompetitionDetailScreen() {
                       const homePickStat = getTeamPickStat(gw.gameweekId, f.homeTeamId, f.homeTeamShortName, f.homeTeamName);
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
                       return (
-                        <View key={f.id} style={styles.webFixtureRow}>
-                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
-                          <FixtureCenter fixture={f} />
-                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
+                        <View key={f.id} style={[styles.webFixtureRow, compactMode ? styles.webFixtureRowCompact : null]}>
+                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} compact={compactMode} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
+                          <FixtureCenter fixture={f} compact={compactMode} />
+                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} compact={compactMode} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
                         </View>
                       );
                     })}
@@ -1153,24 +1617,24 @@ function SnapshotTile({ label, value, tone }: { label: string; value: string; to
   );
 }
 
-function FixtureCenter({ fixture }: { fixture: Fixture }) {
-  if (fixture.status === 'FINISHED') return <View style={styles.webCenterCol}><Text style={styles.scoreText}>{fixture.scoreHome} - {fixture.scoreAway}</Text></View>;
-  if (fixture.status === 'POSTPONED') return <View style={styles.webCenterCol}><Text style={styles.postponedText}>PP</Text></View>;
+function FixtureCenter({ fixture, compact }: { fixture: Fixture; compact?: boolean }) {
+  if (fixture.status === 'FINISHED') return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={[styles.scoreText, compact ? styles.scoreTextCompact : null]}>{fixture.scoreHome} - {fixture.scoreAway}</Text></View>;
+  if (fixture.status === 'POSTPONED') return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={styles.postponedText}>PP</Text></View>;
   if (fixture.status === 'IN_PLAY') {
-    return <View style={styles.webCenterCol}><Text style={styles.scoreText}>{fixture.scoreHome != null && fixture.scoreAway != null ? `${fixture.scoreHome} - ${fixture.scoreAway}` : 'LIVE'}</Text><Text style={styles.liveText}>Live</Text></View>;
+    return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={[styles.scoreText, compact ? styles.scoreTextCompact : null]}>{fixture.scoreHome != null && fixture.scoreAway != null ? `${fixture.scoreHome} - ${fixture.scoreAway}` : 'LIVE'}</Text><Text style={styles.liveText}>Live</Text></View>;
   }
-  return <View style={styles.webCenterCol}><Text style={styles.kickDate}>{formatKickoffDate(fixture.kickoffAt)}</Text><Text style={styles.kickTime}>{formatKickoffTime(fixture.kickoffAt)}</Text></View>;
+  return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={[styles.kickDate, compact ? styles.kickDateCompact : null]}>{formatKickoffDate(fixture.kickoffAt)}</Text><Text style={[styles.kickTime, compact ? styles.kickTimeCompact : null]}>{formatKickoffTime(fixture.kickoffAt)}</Text></View>;
 }
 
-function TeamPickSide({ align, name, shortName, picked, used, pickStat, clickable, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; clickable: boolean; onPress: () => void }) {
+function TeamPickSide({ align, name, shortName, picked, used, pickStat, clickable, compact, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; clickable: boolean; compact?: boolean; onPress: () => void }) {
   return (
-    <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, clickable && !picked ? styles.webTeamClickable : null]}>
+    <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, compact ? styles.webTeamSideCompact : null, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, clickable && !picked ? styles.webTeamClickable : null]}>
       <View style={[styles.webTeamLine, align === 'right' ? styles.webTeamLineRight : null]}>
-        <Text style={[styles.webTeamShort, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : null]}>{shortName}</Text>
+        <Text style={[styles.webTeamShort, compact ? styles.webTeamShortCompact : null, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : null]}>{shortName}</Text>
         {(picked || used) ? <Text style={[styles.webTeamStatus, picked ? styles.webTeamPickedText : styles.webTeamUsedText]}>{picked ? 'Picked' : 'Used'}</Text> : null}
       </View>
-      <Text style={[styles.webTeamName, align === 'right' ? styles.webTeamNameRight : null]} numberOfLines={1}>{name}</Text>
-      {pickStat ? (
+      {!compact ? <Text style={[styles.webTeamName, align === 'right' ? styles.webTeamNameRight : null]} numberOfLines={1}>{name}</Text> : null}
+      {pickStat && !compact ? (
         <View style={[styles.webPickStatBadge, picked ? styles.webPickStatBadgePicked : null, align === 'right' ? styles.webPickStatBadgeRight : null]}>
           <Text style={[styles.webPickStatText, picked ? styles.webPickStatTextPicked : null]}>{pickStat.percentage ?? 0}%</Text>
           <Text style={[styles.webPickStatSubText, picked ? styles.webPickStatSubTextPicked : null]}>· {pickStat.pickCount} {pickStat.pickCount === 1 ? 'player' : 'players'}</Text>
@@ -1318,18 +1782,33 @@ const styles = StyleSheet.create({
   lockSub: { color: '#94a3b8', fontSize: 12, marginTop: 3 },
   lockCountdown: { color: '#fff', fontSize: 25, fontWeight: '900' },
 
+  gameweekDisplayPanel: { borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#0f172acc', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  gameweekDisplayCopy: { flex: 1, minWidth: 0 },
+  gameweekDisplayEyebrow: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
+  gameweekDisplayTitle: { color: '#f8fafc', fontSize: 14, fontWeight: '900', marginTop: 2 },
+  gameweekDisplaySwitch: { flexDirection: 'row', borderWidth: 1, borderColor: '#334155', backgroundColor: '#020617', borderRadius: 13, padding: 4, gap: 4 },
+  gameweekDisplayOption: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  gameweekDisplayOptionActive: { backgroundColor: '#0ea5e933', borderWidth: 1, borderColor: '#38bdf866' },
+  gameweekDisplayOptionText: { color: '#94a3b8', fontSize: 11, fontWeight: '900' },
+  gameweekDisplayOptionTextActive: { color: '#bae6fd' },
   gameweeksSection: { gap: 12 },
   webGameweekCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 14, overflow: 'hidden' },
+  webGameweekCardCompact: { padding: 10, borderRadius: 15 },
   webGameweekPicked: { borderColor: '#0ea5e966' },
   webGameweekCompleted: { borderColor: '#37415166', opacity: 0.86 },
   webGameweekHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   webGameweekHeaderText: { flex: 1 },
   webGwTitleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   webGameweekTitle: { color: '#fff', fontSize: 18, fontWeight: '900' },
+  webGameweekTitleCompact: { fontSize: 16 },
   webGwBadge: { overflow: 'hidden', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
   webGwBadgeGray: { color: '#d1d5db', backgroundColor: '#ffffff18' },
   webGwBadgeRed: { color: '#fca5a5', backgroundColor: '#ef444422' },
   webGwBadgeYellow: { color: '#fcd34d', backgroundColor: '#f59e0b22' },
+  compactGwSummary: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  compactGwSummaryText: { overflow: 'hidden', color: '#94a3b8', borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '800' },
+  compactGwSummaryPick: { overflow: 'hidden', color: '#7dd3fc', borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e922', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
+  compactGwSummaryLifeline: { overflow: 'hidden', color: '#a5f3fc', borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
   webCollapsedPick: { color: '#94a3b8', fontSize: 12, marginTop: 5 },
   webCollapsedPickTeam: { color: '#38bdf8', fontWeight: '900' },
   webExpandedPick: { color: '#d1d5db', fontSize: 12, marginTop: -2, marginBottom: 8, paddingHorizontal: 2 },
@@ -1346,7 +1825,9 @@ const styles = StyleSheet.create({
   selectionLink: { color: '#38bdf8', fontSize: 12, fontWeight: '800' },
   resultsLink: { color: '#4ade80', fontSize: 12, fontWeight: '900' },
   fixturesStack: { gap: 8, marginTop: 14 },
+  fixturesStackCompact: { gap: 6, marginTop: 10 },
   lifelineBox: { borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 12, padding: 10 },
+  lifelineBoxCompact: { padding: 8, borderRadius: 10 },
   lifelineBoxSelected: { borderColor: '#22d3ee', backgroundColor: '#06b6d433' },
   lifelineBoxDisabled: { opacity: 0.55 },
   lifelineCheckboxRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
@@ -1360,7 +1841,9 @@ const styles = StyleSheet.create({
   eliminatedBox: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422', borderRadius: 10, padding: 10 },
   eliminatedBoxText: { color: '#fca5a5', fontSize: 12, fontWeight: '800' },
   webFixtureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: '#1f293780', paddingHorizontal: 10, paddingVertical: 8 },
+  webFixtureRowCompact: { gap: 5, borderRadius: 9, paddingHorizontal: 7, paddingVertical: 5 },
   webTeamSide: { flex: 1, minHeight: 48, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 5, justifyContent: 'center' },
+  webTeamSideCompact: { minHeight: 34, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 4 },
   webTeamRight: { alignItems: 'flex-end' },
   webTeamLeft: { alignItems: 'flex-start' },
   webTeamClickable: { borderWidth: 1, borderColor: '#4b5563', backgroundColor: '#33415555' },
@@ -1369,6 +1852,7 @@ const styles = StyleSheet.create({
   webTeamLine: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   webTeamLineRight: { flexDirection: 'row-reverse' },
   webTeamShort: { color: '#e5e7eb', fontSize: 12, fontWeight: '900' },
+  webTeamShortCompact: { fontSize: 11 },
   webTeamName: { color: '#94a3b8', fontSize: 10, marginTop: 3, maxWidth: 110 },
   webTeamNameRight: { textAlign: 'right' },
   webTeamStatus: { overflow: 'hidden', borderRadius: 999, backgroundColor: '#ffffff22', paddingHorizontal: 5, paddingVertical: 2, fontSize: 8, fontWeight: '900', textTransform: 'uppercase' },
@@ -1382,11 +1866,15 @@ const styles = StyleSheet.create({
   webTeamPickedText: { color: '#fff' },
   webTeamUsedText: { color: '#fcd34d', textDecorationLine: 'line-through' },
   webCenterCol: { minWidth: 72, alignItems: 'center', justifyContent: 'center' },
+  webCenterColCompact: { minWidth: 54 },
   scoreText: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  scoreTextCompact: { fontSize: 13 },
   postponedText: { color: '#fcd34d', fontSize: 11, fontWeight: '900', textTransform: 'uppercase' },
   liveText: { color: '#4ade80', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', marginTop: 2, letterSpacing: 1.0 },
   kickDate: { color: '#94a3b8', fontSize: 10 },
+  kickDateCompact: { fontSize: 9 },
   kickTime: { color: '#cbd5e1', fontSize: 11, fontWeight: '700', marginTop: 1 },
+  kickTimeCompact: { fontSize: 10 },
 
   pickHistoryCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 14 },
   historyHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },

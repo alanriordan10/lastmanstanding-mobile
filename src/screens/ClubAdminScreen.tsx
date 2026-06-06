@@ -641,6 +641,12 @@ export default function ClubAdminScreen() {
               <View style={styles.logoInputRow}>
                 <TextInput value={brandingLogoUrl} onChangeText={setBrandingLogoUrl} placeholder="https://... or data:image/..." placeholderTextColor={colors.textMuted} autoCapitalize="none" style={[styles.input, styles.logoTextInput]} />
               </View>
+              <BrandingPreview
+                clubName={clubQuery.data?.name ?? 'Your Club'}
+                logoUrl={brandingLogoUrl.trim() || null}
+                primaryColor={HEX_COLOR_PATTERN.test(brandingPrimary) ? brandingPrimary : '#6366f1'}
+                secondaryColor={HEX_COLOR_PATTERN.test(brandingSecondary) ? brandingSecondary : '#a5b4fc'}
+              />
               <PrimaryButton label={brandingMutation.isPending ? 'Saving...' : 'Save Branding'} onPress={() => brandingMutation.mutate()} disabled={brandingMutation.isPending} />
             </View>
           ) : null}
@@ -1160,6 +1166,31 @@ function ColorDot({ color }: { color: string }) {
   return <View style={[styles.colorDot, { backgroundColor: color }]} />;
 }
 
+function BrandingPreview({ clubName, logoUrl, primaryColor, secondaryColor }: { clubName: string; logoUrl: string | null; primaryColor: string; secondaryColor: string }) {
+  return (
+    <View style={[styles.brandingPreviewCard, { borderColor: `${primaryColor}66`, backgroundColor: `${primaryColor}12` }]}>
+      <View style={styles.brandingPreviewTop}>
+        {logoUrl ? <Image source={{ uri: logoUrl }} style={styles.brandingPreviewLogo} /> : <View style={[styles.brandingPreviewLogoEmpty, { borderColor: `${primaryColor}66` }]}><Text style={[styles.brandingPreviewLogoText, { color: primaryColor }]}>Logo</Text></View>}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[styles.brandingPreviewEyebrow, { color: primaryColor }]}>Live preview</Text>
+          <Text style={styles.brandingPreviewClub} numberOfLines={1}>{clubName}</Text>
+        </View>
+      </View>
+      <View style={[styles.brandingPreviewHero, { backgroundColor: `${secondaryColor}20`, borderColor: `${secondaryColor}55` }]}>
+        <Text style={styles.brandingPreviewCompetition}>Sample Competition</Text>
+        <View style={styles.brandingPreviewBadgeRow}>
+          <Text style={[styles.brandingPreviewBadge, { borderColor: `${primaryColor}66`, color: primaryColor }]}>ACTIVE</Text>
+          <Text style={[styles.brandingPreviewBadge, { borderColor: `${secondaryColor}66`, color: secondaryColor }]}>PUBLIC</Text>
+        </View>
+        <View style={styles.brandingPreviewStats}>
+          <View style={styles.brandingPreviewStat}><Text style={styles.brandingPreviewStatLabel}>Players</Text><Text style={styles.brandingPreviewStatValue}>42</Text></View>
+          <View style={styles.brandingPreviewStat}><Text style={styles.brandingPreviewStatLabel}>Prize</Text><Text style={[styles.brandingPreviewStatValue, { color: primaryColor }]}>€200</Text></View>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function ColorPreview({ label, color }: { label: string; color: string }) {
   return (
     <View style={styles.colorPreviewPill}>
@@ -1215,6 +1246,21 @@ const styles = StyleSheet.create({
   adminResultEmail: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
   assignBtn: { backgroundColor: '#0ea5e922', borderWidth: 1, borderColor: '#0ea5e955', borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
   assignBtnText: { color: '#7dd3fc', fontSize: 11, fontWeight: '900' },
+  brandingPreviewCard: { borderWidth: 1, borderRadius: 16, padding: 12, gap: 10 },
+  brandingPreviewTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  brandingPreviewLogo: { width: 42, height: 42, borderRadius: 12, borderWidth: 1, borderColor: '#ffffff33' },
+  brandingPreviewLogoEmpty: { width: 42, height: 42, borderRadius: 12, borderWidth: 1, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center' },
+  brandingPreviewLogoText: { fontSize: 10, fontWeight: '900' },
+  brandingPreviewEyebrow: { fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
+  brandingPreviewClub: { color: '#f8fafc', fontSize: 15, fontWeight: '900', marginTop: 2 },
+  brandingPreviewHero: { borderWidth: 1, borderRadius: 14, padding: 12, gap: 9 },
+  brandingPreviewCompetition: { color: '#ffffff', fontSize: 18, fontWeight: '900' },
+  brandingPreviewBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  brandingPreviewBadge: { overflow: 'hidden', borderWidth: 1, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  brandingPreviewStats: { flexDirection: 'row', gap: 8 },
+  brandingPreviewStat: { flex: 1, borderWidth: 1, borderColor: '#ffffff18', backgroundColor: '#ffffff0a', borderRadius: 12, padding: 9 },
+  brandingPreviewStatLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8 },
+  brandingPreviewStatValue: { color: '#f8fafc', fontSize: 18, fontWeight: '900', marginTop: 3 },
   brandPreviewRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 12, padding: 12, marginTop: 12 },
   brandLogoPreview: { width: 42, height: 42, borderRadius: 999, borderWidth: 1, borderColor: '#ffffff33' },
   brandColorWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, flex: 1 },
