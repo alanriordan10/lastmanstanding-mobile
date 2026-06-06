@@ -128,6 +128,7 @@ export default function CompetitionDetailScreen() {
   const [mobileInsightsOpen, setMobileInsightsOpen] = useState(false);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [lifelineForGwId, setLifelineForGwId] = useState<number | null>(null);
+  const [lifelineClearedForGwId, setLifelineClearedForGwId] = useState<number | null>(null);
   const [optimisticPick, setOptimisticPick] = useState<{ gwId: number; teamId: number; teamName: string; teamShortName: string } | null>(null);
   const [mobileRulesOpen, setMobileRulesOpen] = useState(false);
   const [paymentActionError, setPaymentActionError] = useState<string | null>(null);
@@ -138,6 +139,10 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id],
     queryFn: async () => (await api.get<Competition>(`/competitions/${id}`)).data,
     enabled: Number.isFinite(id),
+    refetchInterval: (query) => {
+      const competition = query.state.data as Competition | undefined;
+      return competition?.status === 'ACTIVE' ? 120000 : false;
+    },
   });
 
   const myEntriesQuery = useQuery({
@@ -160,6 +165,8 @@ export default function CompetitionDetailScreen() {
   }, [selectedEntryId]);
 
   const joined = (myEntriesQuery.data?.length ?? 0) > 0;
+  const activeCompetition = competitionQuery.data?.status === 'ACTIVE';
+  const liveDetailRefetchInterval = activeCompetition ? 120000 : false;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
   const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
   const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
@@ -168,6 +175,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'my-status', selectedEntryId],
     queryFn: async () => (await api.get<MyStatusResponse>(`/competitions/${id}/me`, { params: selectedEntryId ? { entryId: selectedEntryId } : undefined })).data,
     enabled: Number.isFinite(id) && joined,
+    refetchInterval: liveDetailRefetchInterval,
   });
 
   const joinMutation = useMutation({
@@ -186,7 +194,7 @@ export default function CompetitionDetailScreen() {
       entryId: selectedEntryId ?? undefined,
       useLifeline,
     }),
-    onMutate: ({ gwId, teamId, teamName, teamShortName }) => {
+    onMutate: ({ gwId, teamId, teamName, teamShortName, useLifeline }) => {
       setOptimisticPick({ gwId, teamId, teamName, teamShortName });
       const queryKey = ['competition', id, 'my-status', selectedEntryId] as const;
       const previous = queryClient.getQueryData<MyStatusResponse>(queryKey);
@@ -196,12 +204,24 @@ export default function CompetitionDetailScreen() {
         const previousPick = current.picks.find((pick) => pick.gameweekId === gwId);
         if (previousPick) nextUsed.delete(previousPick.teamId);
         nextUsed.add(teamId);
-        return { ...current, usedTeamIds: Array.from(nextUsed) };
+        return {
+          ...current,
+          usedTeamIds: Array.from(nextUsed),
+          picks: current.picks.map((pick) => pick.gameweekId === gwId ? {
+            ...pick,
+            teamId,
+            teamName,
+            teamShortName,
+            useLifeline,
+          } : pick),
+        };
       });
       return { queryKey, previous };
     },
-    onSuccess: () => {
-      setLifelineForGwId(null);
+    onSuccess: (_response, variables) => {
+      if (!variables.useLifeline) {
+        setLifelineForGwId(null);
+      }
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] });
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] });
     },
@@ -217,6 +237,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'current-gameweek'],
     queryFn: async () => (await api.get<GameweekResponse>(`/competitions/${id}/gameweeks/current`)).data,
     enabled: Number.isFinite(id),
+    refetchInterval: liveDetailRefetchInterval,
   });
 
   const fixturesQuery = useQuery({
@@ -225,6 +246,7 @@ export default function CompetitionDetailScreen() {
       return (await api.get<Fixture[]>(`/competitions/${id}/fixtures?weeks=99`)).data ?? [];
     },
     enabled: Number.isFinite(id),
+    refetchInterval: liveDetailRefetchInterval,
   });
 
   const myPickQuery = useQuery({
@@ -241,6 +263,7 @@ export default function CompetitionDetailScreen() {
       }
     },
     enabled: Number.isFinite(id) && !!currentGameweekQuery.data?.id && joined,
+    refetchInterval: liveDetailRefetchInterval,
   });
 
   const pickStatsQuery = useQuery<PickStat[]>({
@@ -251,6 +274,7 @@ export default function CompetitionDetailScreen() {
       return (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${currentGameweek.id}/pick-stats`)).data ?? [];
     },
     enabled: Number.isFinite(id),
+    refetchInterval: liveDetailRefetchInterval,
   });
 
   const selectionsQuery = useQuery({
@@ -262,6 +286,7 @@ export default function CompetitionDetailScreen() {
       return payload?.selections ?? [];
     },
     enabled: Number.isFinite(id),
+    refetchInterval: liveDetailRefetchInterval,
   });
 
 
@@ -318,13 +343,17 @@ export default function CompetitionDetailScreen() {
     }
     return ids;
   }, [myStatusQuery.data?.picks, myStatusQuery.data?.usedTeamIds]);
+  const savedLifelineGameweekId = myStatusQuery.data?.picks.find((pick) => pick.useLifeline)?.gameweekId ?? null;
+  const pendingLifelineGameweekId = lifelineForGwId ?? (lifelineClearedForGwId != null ? null : savedLifelineGameweekId);
   const lifelineStatusLabel = !competition?.lifelineEnabled
     ? 'Lifeline disabled'
     : !isParticipant
       ? 'Lifeline enabled'
       : participant?.lifelineUsed
         ? `Lifeline used${participant.lifelineUsedWeek ? ` · GW ${participant.lifelineUsedWeek}` : ''}`
-        : 'Lifeline available';
+        : pendingLifelineGameweekId
+          ? 'Lifeline selected'
+          : 'Lifeline available';
 
   const gameweeks = useMemo(() => {
     const map = new Map<number, { weekNumber: number; gameweekId: number; gameweekStatus: string; lockAt: string; fixtures: Fixture[] }>();
@@ -637,11 +666,47 @@ export default function CompetitionDetailScreen() {
         returnURL: 'lastmanstanding://stripe-redirect',
         style: 'alwaysDark',
         primaryButtonLabel: `Pay €${((intent.amountCents ?? 0) / 100).toFixed(2)} & join`,
+        appearance: {
+          colors: {
+            primary: '#38bdf8',
+            background: '#020617',
+            componentBackground: '#0f172a',
+            componentBorder: '#334155',
+            componentDivider: '#1e293b',
+            primaryText: '#f8fafc',
+            secondaryText: '#94a3b8',
+            componentText: '#f8fafc',
+            placeholderText: '#64748b',
+            icon: '#bae6fd',
+            error: '#fb7185',
+          },
+          shapes: {
+            borderRadius: 14,
+            borderWidth: 1,
+          },
+          primaryButton: {
+            colors: {
+              background: '#38bdf8',
+              text: '#020617',
+              border: '#7dd3fc',
+            },
+            shapes: {
+              borderRadius: 14,
+              borderWidth: 1,
+              height: 52,
+            },
+          },
+        },
+        applePay: {
+          merchantCountryCode: 'IE',
+          buttonType: stripe.PlatformPay.ButtonType.Checkout,
+        },
         googlePay: {
           merchantCountryCode: 'IE',
           currencyCode: 'EUR',
           testEnv: publishableKey.startsWith('pk_test'),
         },
+        paymentMethodOrder: ['card', 'revolut_pay', 'klarna'],
         allowsDelayedPaymentMethods: false,
       });
 
@@ -665,7 +730,7 @@ export default function CompetitionDetailScreen() {
         competitionQuery.refetch(),
         myStatusQuery.refetch(),
         queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
       ]);
     } catch (error: any) {
       const message = error?.response?.data?.message
@@ -884,6 +949,9 @@ export default function CompetitionDetailScreen() {
               ? { teamId: optimisticPick.teamId, teamName: optimisticPick.teamName, teamShortName: optimisticPick.teamShortName, locked: false, useLifeline: lifelineForGwId === gw.gameweekId, outcome: 'PENDING' }
               : null;
             const myPickForGw = optimisticPickForGw ?? savedPickForGw;
+            const lifelineChecked = pendingLifelineGameweekId === gw.gameweekId;
+            const lifelineSelectedElsewhere = Boolean(pendingLifelineGameweekId && pendingLifelineGameweekId !== gw.gameweekId);
+            const lifelineDisabled = isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
             return (
               <View key={gw.weekNumber} style={[styles.webGameweekCard, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
                 <TouchableOpacity
@@ -921,11 +989,27 @@ export default function CompetitionDetailScreen() {
                   <View style={styles.fixturesStack}>
                     {competition?.lifelineEnabled && isParticipant && !isWinner ? (
                       <TouchableOpacity
-                        disabled={isLocked || gw.gameweekStatus !== 'UPCOMING' || participant?.lifelineUsed}
-                        onPress={() => setLifelineForGwId((value) => value === gw.gameweekId ? null : gw.gameweekId)}
-                        style={styles.lifelineBox}
+                        disabled={lifelineDisabled}
+                        onPress={() => {
+                          if (lifelineChecked) {
+                            setLifelineForGwId(null);
+                            setLifelineClearedForGwId(gw.gameweekId);
+                          } else {
+                            setLifelineClearedForGwId(null);
+                            setLifelineForGwId(gw.gameweekId);
+                          }
+                        }}
+                        style={[styles.lifelineBox, lifelineChecked ? styles.lifelineBoxSelected : null, lifelineDisabled && !lifelineChecked ? styles.lifelineBoxDisabled : null]}
                       >
-                        <Text style={styles.lifelineBoxText}>{participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : `${lifelineForGwId === gw.gameweekId ? '✓ ' : ''}Use lifeline for this gameweek`}</Text>
+                        <View style={styles.lifelineCheckboxRow}>
+                          <View style={[styles.lifelineCheckbox, lifelineChecked ? styles.lifelineCheckboxChecked : null, lifelineDisabled && !lifelineChecked ? styles.lifelineCheckboxDisabled : null]}>
+                            {lifelineChecked ? <Text style={styles.lifelineCheckboxTick}>✓</Text> : null}
+                          </View>
+                          <View style={styles.lifelineTextCol}>
+                            <Text style={styles.lifelineBoxText}>{participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
+                            {!participant?.lifelineUsed ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
+                          </View>
+                        </View>
                       </TouchableOpacity>
                     ) : null}
                     {isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek && gw.gameweekStatus !== 'COMPLETED' ? (
@@ -942,9 +1026,9 @@ export default function CompetitionDetailScreen() {
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
                       return (
                         <View key={f.id} style={styles.webFixtureRow}>
-                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
                           <FixtureCenter fixture={f} />
-                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineForGwId === gw.gameweekId })} />
+                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
                         </View>
                       );
                     })}
@@ -1262,8 +1346,17 @@ const styles = StyleSheet.create({
   selectionLink: { color: '#38bdf8', fontSize: 12, fontWeight: '800' },
   resultsLink: { color: '#4ade80', fontSize: 12, fontWeight: '900' },
   fixturesStack: { gap: 8, marginTop: 14 },
-  lifelineBox: { borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 10, padding: 10 },
-  lifelineBoxText: { color: '#a5f3fc', fontSize: 12, fontWeight: '700' },
+  lifelineBox: { borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 12, padding: 10 },
+  lifelineBoxSelected: { borderColor: '#22d3ee', backgroundColor: '#06b6d433' },
+  lifelineBoxDisabled: { opacity: 0.55 },
+  lifelineCheckboxRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  lifelineCheckbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: '#67e8f9', backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  lifelineCheckboxChecked: { backgroundColor: '#0891b2', borderColor: '#a5f3fc' },
+  lifelineCheckboxDisabled: { borderColor: '#475569', backgroundColor: '#111827' },
+  lifelineCheckboxTick: { color: '#ffffff', fontSize: 13, fontWeight: '900', lineHeight: 16 },
+  lifelineTextCol: { flex: 1 },
+  lifelineBoxText: { color: '#a5f3fc', fontSize: 12, fontWeight: '900' },
+  lifelineBoxHelp: { color: '#bae6fd', opacity: 0.85, fontSize: 11, lineHeight: 15, marginTop: 3 },
   eliminatedBox: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422', borderRadius: 10, padding: 10 },
   eliminatedBoxText: { color: '#fca5a5', fontSize: 12, fontWeight: '800' },
   webFixtureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: '#1f293780', paddingHorizontal: 10, paddingVertical: 8 },

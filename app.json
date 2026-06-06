@@ -2,7 +2,7 @@
   "expo": {
     "name": "Last Man Standing",
     "slug": "lastmanstanding-mobile",
-    "version": "1.0.4",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -24,7 +24,7 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.lastmanstanding.app",
       "permissions": [],
-      "versionCode": 4,
+      "versionCode": 6,
       "playStoreUrl": "",
       "blockedPermissions": []
     },
@@ -35,7 +35,13 @@
       "expo-router",
       "expo-secure-store",
       "@react-native-community/datetimepicker",
-      "@stripe/stripe-react-native"
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.lastmanstanding.app",
+          "enableGooglePay": true
+        }
+      ]
     ],
     "scheme": "lastmanstanding",
     "extra": {

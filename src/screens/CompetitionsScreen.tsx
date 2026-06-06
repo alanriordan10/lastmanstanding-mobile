@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { api } from '../api/client';
 import type { Competition, MyCompetition } from '../types';
 import { FilterPill, MetaText, ScreenTitle, StatusPill } from '../components/ui';
@@ -101,11 +101,26 @@ export default function CompetitionsScreen() {
   const competitionsQuery = useQuery({
     queryKey: ['competitions-upcoming'],
     queryFn: async () => (await api.get<Competition[]>('/competitions/upcoming')).data,
+    refetchInterval: (query) => {
+      const rows = query.state.data as Competition[] | undefined;
+      return rows?.some((competition) => competition.status === 'ACTIVE') ? 120000 : false;
+    },
   });
   const myDetailsQuery = useQuery({
     queryKey: ['competitions-my-details'],
     queryFn: async () => (await api.get<MyCompetition[]>('/competitions/my/details')).data ?? [],
+    refetchInterval: (query) => {
+      const rows = query.state.data as MyCompetition[] | undefined;
+      return rows?.some((row) => row.competition.status === 'ACTIVE') ? 120000 : false;
+    },
   });
+
+  useFocusEffect(
+    useCallback(() => {
+      void competitionsQuery.refetch();
+      void myDetailsQuery.refetch();
+    }, [competitionsQuery.refetch, myDetailsQuery.refetch]),
+  );
 
 
   const joinCodeMutation = useMutation({

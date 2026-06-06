@@ -56,6 +56,10 @@ export default function SurvivorTableScreen() {
     queryKey: ['competition', compId],
     queryFn: async () => (await api.get<Competition>(`/competitions/${compId}`)).data,
     enabled: Number.isFinite(compId),
+    refetchInterval: (query) => {
+      const competition = query.state.data as Competition | undefined;
+      return competition?.status === 'ACTIVE' ? 120000 : false;
+    },
   });
 
   const { data, isLoading, isRefetching, refetch, error } = useQuery({
@@ -65,7 +69,7 @@ export default function SurvivorTableScreen() {
     refetchInterval: (query) => {
       const table = query.state.data as SurvivorTableResponse | undefined;
       const hasLive = table?.gameweeks?.some((gw) => gw.status === 'IN_PROGRESS');
-      return hasLive ? 60000 : 300000;
+      return hasLive || compQuery.data?.status === 'ACTIVE' ? 120000 : false;
     },
   });
 

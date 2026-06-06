@@ -70,6 +70,25 @@ function dateFromInput(value: string) {
   return new Date(year, month - 1, day);
 }
 
+function parseGameweekRangeInput(input: string): number[] {
+  const weeks = new Set<number>();
+  for (const rawPart of input.split(',')) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const rangeMatch = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      const [from, to] = start <= end ? [start, end] : [end, start];
+      for (let week = from; week <= to; week += 1) weeks.add(week);
+      continue;
+    }
+    const week = Number(part);
+    if (Number.isInteger(week) && week > 0) weeks.add(week);
+  }
+  return Array.from(weeks).sort((a, b) => a - b);
+}
+
 function parseAdminDate(value?: string | number[] | null) {
   if (!value) return null;
   if (Array.isArray(value)) {
@@ -168,7 +187,7 @@ export default function AdminScreen() {
   const [testDataCompetitionId, setTestDataCompetitionId] = useState<number | null>(null);
   const [testDataCompetitionDropdownOpen, setTestDataCompetitionDropdownOpen] = useState(false);
   const [testDataUserCount, setTestDataUserCount] = useState('100');
-  const [testDataGameweeks, setTestDataGameweeks] = useState('3,4,5,6');
+  const [testDataGameweeks, setTestDataGameweeks] = useState('3-6');
   const [fixtureResults, setFixtureResults] = useState<Record<number, FixtureResultDraft>>({});
   const [skipAutoComplete, setSkipAutoComplete] = useState(false);
   const [simulateDensity, setSimulateDensity] = useState<'comfortable' | 'compact'>('comfortable');
@@ -543,7 +562,8 @@ export default function AdminScreen() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'gameweeks', selectedCompId] }),
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
     onError: (err: any) => setOpStatus({ tone: 'error', message: getApiMessage(err, 'Simulation failed.') }),
@@ -564,7 +584,8 @@ export default function AdminScreen() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'gameweeks', selectedCompId] }),
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
     onError: (err: any) => setOpStatus({ tone: 'error', message: getApiMessage(err, 'Bulk simulation failed.') }),
@@ -574,14 +595,15 @@ export default function AdminScreen() {
     mutationFn: async () => api.post('/admin/test/generate', {
       competitionId: testDataCompetitionId,
       userCount: Math.max(1, Math.min(500, Number(testDataUserCount || '0'))),
-      gameweeksToSeedPicks: testDataGameweeks.split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value)),
+      gameweeksToSeedPicks: parseGameweekRangeInput(testDataGameweeks),
     }, { timeout: 120_000 }),
     onSuccess: async (response: any) => {
       const data = response?.data ?? {};
       setOpStatus({ tone: 'success', message: `Created ${data.usersCreated ?? 0} users, ${data.participantsAdded ?? 0} participants, ${data.picksCreated ?? 0} picks.` });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
     onError: (err: any) => setOpStatus({ tone: 'error', message: getApiMessage(err, 'Failed to generate test data.') }),
@@ -1267,14 +1289,14 @@ export default function AdminScreen() {
               <Text style={styles.fieldHelp}>Recommended: 50-200 for testing. Higher numbers may take longer to generate.</Text>
 
               <Text style={styles.fieldLabel}>Gameweeks to Seed Picks</Text>
-              <TextInput value={testDataGameweeks} onChangeText={setTestDataGameweeks} placeholder="e.g. 3,4,5,6" placeholderTextColor={colors.textMuted} style={styles.input} />
-              <Text style={styles.fieldHelp}>Creates random picks for these gameweeks so you can simulate results without mass elimination.</Text>
+              <TextInput value={testDataGameweeks} onChangeText={setTestDataGameweeks} placeholder="e.g. 1-8 or 1-4,7,9" placeholderTextColor={colors.textMuted} style={styles.input} />
+              <Text style={styles.fieldHelp}>Creates random picks for these gameweeks. Supports ranges like 1-8, comma lists like 1,3,5, or mixed 1-4,7,9.</Text>
 
               <View style={styles.testDataInfoCard}>
                 <Text style={styles.testDataInfoTitle}>What this does</Text>
                 <Text style={styles.testDataInfoText}>Creates {Number(testDataUserCount || '0')} users named testuser001, testuser002, etc.</Text>
                 <Text style={styles.testDataInfoText}>All users use password: password123.</Text>
-                <Text style={styles.testDataInfoText}>Joins users to the selected competition and creates random picks for the selected gameweeks.</Text>
+                <Text style={styles.testDataInfoText}>Joins users to the selected competition and creates random picks for the selected gameweeks/ranges.</Text>
               </View>
 
               <PrimaryButton label={generateTestData.isPending ? `Generating ${testDataUserCount || '0'} users...` : `Generate ${testDataUserCount || '0'} Test Users`} onPress={() => generateTestData.mutate()} disabled={!testDataCompetitionId || generateTestData.isPending || Number(testDataUserCount || '0') < 1} />
@@ -1832,7 +1854,8 @@ function AdminParticipantsPanel({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'participants', competition.id] }),
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
   });
@@ -1843,7 +1866,8 @@ function AdminParticipantsPanel({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'participants', competition.id] }),
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
-        queryClient.invalidateQueries({ queryKey: ['competitions'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
   });

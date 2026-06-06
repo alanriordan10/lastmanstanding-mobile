@@ -53,7 +53,12 @@ export default function GameweekResultsScreen() {
     queryKey: ['competition', compId],
     queryFn: async () => (await api.get<Competition>(`/competitions/${compId}`)).data,
     enabled: Number.isFinite(compId),
+    refetchInterval: (query) => {
+      const competition = query.state.data as Competition | undefined;
+      return competition?.status === 'ACTIVE' ? 120000 : false;
+    },
   });
+  const liveResultsRefetchInterval = compQuery.data?.status === 'ACTIVE' ? 120000 : false;
 
   const { data, isLoading, error, isRefetching, refetch } = useQuery({
     queryKey: ['gameweek-results', compId, gameweekId],
@@ -63,18 +68,21 @@ export default function GameweekResultsScreen() {
       return res.data as GameweekSelectionsData;
     },
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    refetchInterval: liveResultsRefetchInterval,
   });
 
   const fixturesQuery = useQuery({
     queryKey: ['gameweek-results-fixtures', compId, gameweekId],
     queryFn: async () => (await api.get<Fixture[]>(`/competitions/${compId}/gameweeks/${gameweekId}/fixtures`)).data ?? [],
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    refetchInterval: liveResultsRefetchInterval,
   });
 
   const pickStatsQuery = useQuery({
     queryKey: ['gameweek-results-pick-stats', compId, gameweekId],
     queryFn: async () => (await api.get<PickStat[]>(`/competitions/${compId}/gameweeks/${gameweekId}/pick-stats`)).data ?? [],
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    refetchInterval: liveResultsRefetchInterval,
   });
 
   useEffect(() => {
@@ -87,9 +95,13 @@ export default function GameweekResultsScreen() {
   const weekNumber = fixtures[0]?.weekNumber || data?.weekNumber || 'N/A';
 
   const userEntryCounts = useMemo(() => {
-    const counts = new Map<number, number>();
-    selections.forEach((s) => counts.set(s.userId, (counts.get(s.userId) ?? 0) + 1));
-    return counts;
+    const entriesByUser = new Map<number, Set<string>>();
+    selections.forEach((s) => {
+      const entries = entriesByUser.get(s.userId) ?? new Set<string>();
+      entries.add(s.participantId != null ? `participant:${s.participantId}` : `entry:${s.entryNumber ?? 1}`);
+      entriesByUser.set(s.userId, entries);
+    });
+    return new Map(Array.from(entriesByUser.entries()).map(([userId, entries]) => [userId, entries.size]));
   }, [selections]);
 
   const displayName = (s: GameweekSelection) => (userEntryCounts.get(s.userId) ?? 0) > 1

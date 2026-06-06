@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Image, Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { FontAwesome, Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
+import Svg, { Path } from 'react-native-svg';
 import { useRouter } from 'expo-router';
 import { API_BASE_URL, getApiErrorMessage } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { authenticateWithBiometrics, getBiometricAvailability, hasStoredTokensForBiometricLogin, isBiometricLoginEnabled } from '../auth/biometricAuth';
+
+function GoogleMark() {
+  return (
+    <Svg width={22} height={22} viewBox="0 0 24 24" accessibilityElementsHidden>
+      <Path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+      <Path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+      <Path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+      <Path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+    </Svg>
+  );
+}
 
 export default function LoginScreen() {
   const { login, refreshMe } = useAuth();
@@ -118,14 +130,15 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.socialCard}>
+          <View style={styles.socialDivider}>
+            <View style={styles.socialDividerLine} />
+            <Text style={styles.socialDividerText}>or Sign in with</Text>
+            <View style={styles.socialDividerLine} />
+          </View>
           <TouchableOpacity onPress={onGoogleLogin} activeOpacity={0.88} style={styles.socialButton}>
-            <View style={styles.googleIconWrap}>
-              <FontAwesome name="google" size={17} color="#4285F4" />
-            </View>
-            <Text style={styles.socialButtonText}>Continue with Google</Text>
-            <View style={styles.socialArrowWrap}>
-              <Ionicons name="arrow-forward" size={18} color="#e2e8f0" />
-            </View>
+            <GoogleMark />
+            <Text style={styles.socialButtonText}>Sign in with Google</Text>
+            <Ionicons name="arrow-forward" size={17} color="#7dd3fc" />
           </TouchableOpacity>
         </View>
 
@@ -216,22 +229,24 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontWeight: '800', fontSize: 14 },
   biometricBtn: { borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#0ea5e91a', borderRadius: 10, paddingVertical: 11, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
   biometricBtnText: { color: '#7dd3fc', fontWeight: '900', fontSize: 13 },
-  socialCard: { borderWidth: 1, borderColor: '#ffffff1f', borderRadius: 22, backgroundColor: '#0f172a', padding: 18 },
+  socialCard: { borderWidth: 1, borderColor: '#ffffff1f', borderRadius: 22, backgroundColor: '#0c1629', padding: 18, gap: 13 },
+  socialDivider: { flexDirection: 'row', alignItems: 'center' },
+  socialDividerLine: { flex: 1, height: 1, backgroundColor: '#374151' },
+  socialDividerText: { flexShrink: 0, color: '#6b7280', fontSize: 12, fontWeight: '700', marginHorizontal: 12 },
   socialButton: {
     minHeight: 48,
     borderWidth: 1,
     borderColor: '#ffffff1f',
     borderRadius: 12,
-    backgroundColor: '#ffffff08',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    backgroundColor: '#172033e8',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 10,
   },
-  googleIconWrap: { width: 28, height: 28, borderRadius: 999, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
-  socialButtonText: { flex: 1, color: '#e2e8f0', fontSize: 13, fontWeight: '900', textAlign: 'center' },
-  socialArrowWrap: { width: 28, height: 28, borderRadius: 999, backgroundColor: '#ffffff12', alignItems: 'center', justifyContent: 'center' },
+  socialButtonText: { color: '#f3f4f6', fontSize: 14, fontWeight: '900', textAlign: 'center', letterSpacing: -0.1 },
   clubCtaCard: { borderWidth: 1, borderColor: '#7dd3fc55', borderRadius: 22, backgroundColor: '#0f2538', padding: 18, gap: 10 },
   clubCtaPill: { alignSelf: 'flex-start', borderWidth: 1, borderColor: '#7dd3fc55', backgroundColor: '#0ea5e922', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   clubCtaPillText: { color: '#bae6fd', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
