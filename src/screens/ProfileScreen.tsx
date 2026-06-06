@@ -11,6 +11,14 @@ import { colors, spacing } from '../theme/tokens';
 
 const isExpoGo = Constants.appOwnership === 'expo';
 const appVersion = Constants.expoConfig?.version ?? '1.0.0';
+type NotificationPreferences = {
+  emailResultsOptIn: boolean;
+  notificationPickReminders: boolean;
+  notificationResultUpdates: boolean;
+  notificationCompetitionAnnouncements: boolean;
+  notificationPaymentUpdates: boolean;
+};
+
 const buildVersion = Constants.expoConfig?.android?.versionCode ? String(Constants.expoConfig.android.versionCode) : 'dev';
 
 async function getExpoPushTokenSafe(): Promise<string | null> {
@@ -40,8 +48,14 @@ export default function ProfileScreen() {
   const [pushStatus, setPushStatus] = useState<string>(isExpoGo ? 'Unavailable in Expo Go' : 'Not registered');
   const [busy, setBusy] = useState(false);
 
-  const [emailOptIn, setEmailOptIn] = useState<boolean>(user?.emailResultsOptIn ?? false);
-  const [savingEmailPref, setSavingEmailPref] = useState(false);
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences>({
+    emailResultsOptIn: user?.emailResultsOptIn ?? false,
+    notificationPickReminders: user?.notificationPickReminders ?? true,
+    notificationResultUpdates: user?.notificationResultUpdates ?? user?.emailResultsOptIn ?? false,
+    notificationCompetitionAnnouncements: user?.notificationCompetitionAnnouncements ?? true,
+    notificationPaymentUpdates: user?.notificationPaymentUpdates ?? true,
+  });
+  const [savingNotificationPref, setSavingNotificationPref] = useState<keyof NotificationPreferences | null>(null);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricLabel, setBiometricLabel] = useState('Biometrics');
@@ -54,8 +68,14 @@ export default function ProfileScreen() {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    setEmailOptIn(user?.emailResultsOptIn ?? false);
-  }, [user?.emailResultsOptIn]);
+    setNotificationPrefs({
+      emailResultsOptIn: user?.emailResultsOptIn ?? false,
+      notificationPickReminders: user?.notificationPickReminders ?? true,
+      notificationResultUpdates: user?.notificationResultUpdates ?? user?.emailResultsOptIn ?? false,
+      notificationCompetitionAnnouncements: user?.notificationCompetitionAnnouncements ?? true,
+      notificationPaymentUpdates: user?.notificationPaymentUpdates ?? true,
+    });
+  }, [user?.emailResultsOptIn, user?.notificationPickReminders, user?.notificationResultUpdates, user?.notificationCompetitionAnnouncements, user?.notificationPaymentUpdates]);
 
   useEffect(() => {
     const loadBiometricState = async () => {
@@ -137,19 +157,32 @@ export default function ProfileScreen() {
     }
   };
 
-  const onToggleEmailPref = async () => {
-    const next = !emailOptIn;
-    setSavingEmailPref(true);
+  const onToggleNotificationPref = async (key: keyof NotificationPreferences) => {
+    const nextPrefs = { ...notificationPrefs, [key]: !notificationPrefs[key] };
+    if (key === 'notificationResultUpdates') {
+      nextPrefs.emailResultsOptIn = nextPrefs.notificationResultUpdates;
+    }
+    if (key === 'emailResultsOptIn') {
+      nextPrefs.notificationResultUpdates = nextPrefs.emailResultsOptIn;
+    }
+    setSavingNotificationPref(key);
     try {
-      await api.put('/auth/email-preferences', { emailResultsOptIn: next });
-      setEmailOptIn(next);
+      const { data } = await api.put<NotificationPreferences>('/auth/notification-preferences', nextPrefs);
+      setNotificationPrefs(data);
       if (user) {
-        await loginWithData({ ...user, emailResultsOptIn: next });
+        await loginWithData({
+          ...user,
+          emailResultsOptIn: data.emailResultsOptIn,
+          notificationPickReminders: data.notificationPickReminders,
+          notificationResultUpdates: data.notificationResultUpdates,
+          notificationCompetitionAnnouncements: data.notificationCompetitionAnnouncements,
+          notificationPaymentUpdates: data.notificationPaymentUpdates,
+        });
       } else {
         await refreshMe();
       }
     } finally {
-      setSavingEmailPref(false);
+      setSavingNotificationPref(null);
     }
   };
 
@@ -192,12 +225,16 @@ export default function ProfileScreen() {
           <SectionTitle>Account</SectionTitle>
           <View style={styles.fieldRow}><MetaText>Role</MetaText><StatusPill text={user?.role ?? 'USER'} tone={user?.role === 'ADMIN' ? 'warn' : user?.role === 'CLUB_ADMIN' ? 'brand' : 'neutral'} /></View>
           <View style={styles.fieldRow}><MetaText>App version</MetaText><Text style={styles.versionText}>v{appVersion} ({buildVersion})</Text></View>
-          <View style={styles.fieldRow}><MetaText>Email reminders</MetaText><StatusPill text={emailOptIn ? 'ON' : 'OFF'} tone={emailOptIn ? 'success' : 'neutral'} /></View>
-          <TouchableOpacity style={styles.toggleBtn} onPress={() => void onToggleEmailPref()} disabled={savingEmailPref}>
-            <Text style={styles.toggleBtnText}>{savingEmailPref ? 'Saving...' : emailOptIn ? 'Turn Off Email Reminders' : 'Turn On Email Reminders'}</Text>
-          </TouchableOpacity>
         </Card>
 
+        <Card>
+          <SectionTitle>Notification Preferences</SectionTitle>
+          <Text style={styles.hint}>Control which updates you receive. Push registration is still managed below.</Text>
+          <NotificationToggle label="Pick reminders" detail="Deadline reminders before a gameweek locks." value={notificationPrefs.notificationPickReminders} saving={savingNotificationPref === 'notificationPickReminders'} onPress={() => void onToggleNotificationPref('notificationPickReminders')} />
+          <NotificationToggle label="Result updates" detail="Gameweek outcomes and elimination updates." value={notificationPrefs.notificationResultUpdates} saving={savingNotificationPref === 'notificationResultUpdates'} onPress={() => void onToggleNotificationPref('notificationResultUpdates')} />
+          <NotificationToggle label="Competition announcements" detail="Messages from competition or club admins." value={notificationPrefs.notificationCompetitionAnnouncements} saving={savingNotificationPref === 'notificationCompetitionAnnouncements'} onPress={() => void onToggleNotificationPref('notificationCompetitionAnnouncements')} />
+          <NotificationToggle label="Payment reminders" detail="Payment confirmations and payment follow-up notices." value={notificationPrefs.notificationPaymentUpdates} saving={savingNotificationPref === 'notificationPaymentUpdates'} onPress={() => void onToggleNotificationPref('notificationPaymentUpdates')} />
+        </Card>
 
         <Card>
           <SectionTitle>Biometric Login</SectionTitle>
@@ -256,6 +293,20 @@ export default function ProfileScreen() {
   );
 }
 
+function NotificationToggle({ label, detail, value, saving, onPress }: { label: string; detail: string; value: boolean; saving: boolean; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={styles.notificationRow} onPress={onPress} disabled={saving} activeOpacity={0.85}>
+      <View style={styles.notificationCopy}>
+        <Text style={styles.notificationLabel}>{label}</Text>
+        <Text style={styles.notificationDetail}>{detail}</Text>
+      </View>
+      <View style={[styles.switchTrack, value ? styles.switchTrackOn : null, saving ? styles.switchTrackSaving : null]}>
+        <View style={[styles.switchThumb, value ? styles.switchThumbOn : null]} />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg, padding: spacing.screen },
   hero: { borderWidth: 1, borderColor: '#ffffff1a', borderRadius: 18, backgroundColor: '#111827', padding: 14, flexDirection: 'row', gap: 12, alignItems: 'center' },
@@ -270,6 +321,15 @@ const styles = StyleSheet.create({
   flexOne: { flex: 1 },
   toggleBtn: { marginTop: 8, borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#0ea5e922', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
   toggleBtnText: { color: '#7dd3fc', fontWeight: '700', fontSize: 12 },
+  notificationRow: { marginTop: 10, borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#ffffff08', borderRadius: 14, paddingHorizontal: 11, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  notificationCopy: { flex: 1, minWidth: 0 },
+  notificationLabel: { color: '#f8fafc', fontSize: 13, fontWeight: '900' },
+  notificationDetail: { color: '#94a3b8', fontSize: 11, lineHeight: 16, marginTop: 3 },
+  switchTrack: { width: 46, height: 26, borderRadius: 999, backgroundColor: '#334155', padding: 3, justifyContent: 'center' },
+  switchTrackOn: { backgroundColor: '#0ea5e9' },
+  switchTrackSaving: { opacity: 0.55 },
+  switchThumb: { width: 20, height: 20, borderRadius: 999, backgroundColor: '#cbd5e1' },
+  switchThumbOn: { alignSelf: 'flex-end', backgroundColor: '#ffffff' },
   dangerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#7f1d1d66', backgroundColor: '#450a0a33', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 12, gap: 12 },
   dangerHeaderOpen: { borderColor: '#ef444466', backgroundColor: '#7f1d1d3d' },
   dangerHeaderCopy: { flex: 1, minWidth: 0 },
