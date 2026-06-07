@@ -512,14 +512,14 @@ export default function CompetitionDetailScreen() {
     });
     return results;
   }, [latestNarrativeWeek]);
-  const biggestCasualty = latestNarrativeStats.find((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS') ?? null;
+  const losingPickedTeam = latestNarrativeStats.find((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS') ?? null;
   const contrarianSurvivor = [...latestNarrativeStats].reverse().find((stat) => {
     if (stat.teamId == null || stat.pickCount <= 0) return false;
     const result = narrativeTeamResults.get(stat.teamId);
     return result === 'WIN' || result === 'POSTPONED';
   }) ?? null;
   const survivingPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && ['WIN', 'POSTPONED'].includes(String(narrativeTeamResults.get(stat.teamId))));
-  const doomedPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS');
+  const losingPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS');
   const gwPickedCount = resolvedSelections.length;
   const gwAdvancedCount = resolvedSelections.filter((selection) => {
     const outcome = String(selection.outcome ?? '').toUpperCase();
@@ -552,6 +552,8 @@ export default function CompetitionDetailScreen() {
   const weeklyEliminatedCount = narrativeWeekInProgress
     ? (gwEliminatedFromSelections || (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0))
     : (gwEliminatedThisWeek ?? (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0));
+  const biggestCasualty = weeklyEliminatedCount > 0 ? losingPickedTeam : null;
+  const doomedPickedTeams = weeklyEliminatedCount > 0 ? losingPickedTeams : [];
   const baseEliminatedCount = Math.max(participantCount - (competition?.activeCount ?? 0), 0);
   const liveWeekExtraEliminations = narrativeWeekInProgress ? gwEliminatedFromSelections : 0;
   const effectiveEliminatedCount = Math.min(baseEliminatedCount + liveWeekExtraEliminations, participantCount);
@@ -1195,6 +1197,9 @@ export default function CompetitionDetailScreen() {
   const clubPrimaryColor = brandedCompetition?.clubPrimaryColor ?? colors.brand;
   const clubSecondaryColor = brandedCompetition?.clubSecondaryColor ?? clubPrimaryColor;
   const actionBanner = actionSummary;
+  // Keep the skeleton short-lived: the pulse can render from the competition and fixture list.
+  // Pick stats, selections, and participant state continue filling in without blocking the whole hero.
+  const detailFirstLoad = competitionQuery.isLoading || fixturesQuery.isLoading;
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
@@ -1239,6 +1244,10 @@ export default function CompetitionDetailScreen() {
           </View>
 
           <View style={[styles.pulsePanel, { borderLeftColor: clubPrimaryColor, backgroundColor: `${clubSecondaryColor}10` }]}>
+            {detailFirstLoad ? (
+              <CompetitionPulseSkeleton />
+            ) : (
+              <>
             <View style={styles.pulseEyebrowRow}>
               {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.pulseLogo} /> : null}
               <Text style={[styles.pulseEyebrow, { color: clubPrimaryColor }]}>{clubName ?? competition?.name ?? 'Competition'} Pulse</Text>
@@ -1258,11 +1267,19 @@ export default function CompetitionDetailScreen() {
               {weeklySurvivalRate != null ? <Text style={styles.webPulseChip}>GW survival {weeklySurvivalRate}% · {weeklyAdvancedCount} adv · {weeklyEliminatedCount} out</Text> : null}
               {mostBackedTeam ? <Text style={styles.webPulseChip}>Crowd pick: {mostBackedTeam.teamShortName} ({mostBackedTeam.pickCount})</Text> : null}
             </View>
+              </>
+            )}
           </View>
 
           <View style={styles.spotlightGrid}>
-            <NarrativeTile eyebrow="Knockout pressure" title={competition?.status === 'UPCOMING' ? `${competition?.participantCount ?? 0} entered` : `${eliminatedCount} out, ${effectiveActiveCount} alive`} detail={competition?.status === 'UPCOMING' ? 'No eliminations yet. Knockout pressure begins when the first fixtures lock.' : `${survivalRate}% of the field is still standing.`} accent="warn" />
-            <NarrativeTile eyebrow={isEliminated ? 'Your run' : 'Your runway'} title={isEliminated ? `Eliminated in GW${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}` : `${Math.max(new Set((fixtures ?? []).flatMap((f) => [f.homeTeamId, f.awayTeamId])).size - consumedTeamIds.size, 0)} teams left to use`} detail={isEliminated ? 'There is no next pick for this entry, but you can still track the remaining survivors.' : `${consumedTeamIds.size} team${consumedTeamIds.size === 1 ? '' : 's'} already burned from your pool.`} accent="brand" />
+            {detailFirstLoad ? (
+              <CompetitionSpotlightSkeleton />
+            ) : (
+              <>
+                <NarrativeTile eyebrow="Knockout pressure" title={competition?.status === 'UPCOMING' ? `${competition?.participantCount ?? 0} entered` : `${eliminatedCount} out, ${effectiveActiveCount} alive`} detail={competition?.status === 'UPCOMING' ? 'No eliminations yet. Knockout pressure begins when the first fixtures lock.' : `${survivalRate}% of the field is still standing.`} accent="warn" />
+                <NarrativeTile eyebrow={isEliminated ? 'Your run' : 'Your runway'} title={isEliminated ? `Eliminated in GW${participant?.eliminatedWeek ?? selectedEntry?.eliminatedWeek ?? '—'}` : `${Math.max(new Set((fixtures ?? []).flatMap((f) => [f.homeTeamId, f.awayTeamId])).size - consumedTeamIds.size, 0)} teams left to use`} detail={isEliminated ? 'There is no next pick for this entry, but you can still track the remaining survivors.' : `${consumedTeamIds.size} team${consumedTeamIds.size === 1 ? '' : 's'} already burned from your pool.`} accent="brand" />
+              </>
+            )}
           </View>
         </View>
 
@@ -1276,21 +1293,33 @@ export default function CompetitionDetailScreen() {
         </TouchableOpacity>
         {mobileInsightsOpen ? (
           <View style={styles.insightStack}>
-            <InsightTile tone="brand" eyebrow="Crowd read" title={crowdReadTitle} detail={crowdReadDetail} />
-            <InsightTile tone="danger" eyebrow="Knockout blow" title={knockoutTitle} detail={knockoutDetail} />
-            <InsightTile tone="success" eyebrow="Contrarian edge" title={contrarianTitle} detail={contrarianDetail} />
+            {detailFirstLoad ? (
+              <CompetitionInsightSkeleton />
+            ) : (
+              <>
+                <InsightTile tone="brand" eyebrow="Crowd read" title={crowdReadTitle} detail={crowdReadDetail} />
+                <InsightTile tone="danger" eyebrow="Knockout blow" title={knockoutTitle} detail={knockoutDetail} />
+                <InsightTile tone="success" eyebrow="Contrarian edge" title={contrarianTitle} detail={contrarianDetail} />
+              </>
+            )}
           </View>
         ) : null}
 
         <View style={styles.changedPanel}>
-          <Text style={[styles.sectionEyebrow, { color: clubPrimaryColor }]}>What Changed This Gameweek</Text>
-          <Text style={styles.changedTitle}>{narrativeWeekLabel ?? 'Latest gameweek'} snapshot</Text>
-          <View style={styles.snapshotTilesWeb}>
-            <SnapshotTile label="New eliminations" value={String(weeklyEliminatedCount)} tone="danger" />
-            <SnapshotTile label="Most picked" value={mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet'} />
-            <SnapshotTile label="Lifelines played" value={competition?.lifelineEnabled ? String(lifelinesPlayedThisWeek) : 'Lifeline off'} tone="warn" />
-            <SnapshotTile label="Entries remaining" value={String(effectiveActiveCount)} tone="success" />
-          </View>
+          {detailFirstLoad ? (
+            <CompetitionSnapshotSkeleton />
+          ) : (
+            <>
+              <Text style={[styles.sectionEyebrow, { color: clubPrimaryColor }]}>What Changed This Gameweek</Text>
+              <Text style={styles.changedTitle}>{narrativeWeekLabel ?? 'Latest gameweek'} snapshot</Text>
+              <View style={styles.snapshotTilesWeb}>
+                <SnapshotTile label="New eliminations" value={String(weeklyEliminatedCount)} tone="danger" />
+                <SnapshotTile label="Most picked" value={mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet'} />
+                <SnapshotTile label="Lifelines played" value={competition?.lifelineEnabled ? String(lifelinesPlayedThisWeek) : 'Lifeline off'} tone="warn" />
+                <SnapshotTile label="Entries remaining" value={String(effectiveActiveCount)} tone="success" />
+              </View>
+            </>
+          )}
         </View>
 
         <View style={[styles.stateBanner, actionBanner.tone === 'warn' ? styles.stateBannerWarn : actionBanner.tone === 'danger' ? styles.stateBannerDanger : actionBanner.tone === 'success' ? styles.stateBannerSuccess : styles.stateBannerBrand]}>
@@ -1588,6 +1617,68 @@ function SummaryTile({ label, value, detail, accent }: { label: string; value: s
   );
 }
 
+
+function SkeletonBlock({ width = '100%', height = 12, radius = 8, style }: { width?: number | `${number}%`; height?: number; radius?: number; style?: object }) {
+  return <View style={[styles.skeletonBlock, { width, height, borderRadius: radius }, style]} />;
+}
+
+function CompetitionPulseSkeleton() {
+  return (
+    <View>
+      <View style={styles.skeletonRow}>
+        <SkeletonBlock width={22} height={22} radius={7} />
+        <SkeletonBlock width="45%" height={10} />
+        <SkeletonBlock width="22%" height={10} />
+      </View>
+      <SkeletonBlock width="82%" height={28} style={styles.skeletonGapLarge} />
+      <SkeletonBlock width="100%" height={14} style={styles.skeletonGap} />
+      <SkeletonBlock width="72%" height={14} style={styles.skeletonGapSmall} />
+      <View style={[styles.skeletonRow, styles.skeletonGapLarge]}>
+        <SkeletonBlock width={112} height={30} radius={999} />
+        <SkeletonBlock width={132} height={30} radius={999} />
+      </View>
+    </View>
+  );
+}
+
+function CompetitionSpotlightSkeleton() {
+  return <>{[0, 1].map((item) => (
+    <View key={item} style={styles.narrativeTile}>
+      <SkeletonBlock width="42%" height={10} />
+      <SkeletonBlock width="65%" height={18} style={styles.skeletonGap} />
+      <SkeletonBlock width="100%" height={12} style={styles.skeletonGap} />
+      <SkeletonBlock width="70%" height={12} style={styles.skeletonGapSmall} />
+    </View>
+  ))}</>;
+}
+
+function CompetitionInsightSkeleton() {
+  return <>{[0, 1, 2].map((item) => (
+    <View key={item} style={styles.insightTile}>
+      <SkeletonBlock width="35%" height={10} />
+      <SkeletonBlock width="68%" height={18} style={styles.skeletonGap} />
+      <SkeletonBlock width="100%" height={12} style={styles.skeletonGap} />
+    </View>
+  ))}</>;
+}
+
+function CompetitionSnapshotSkeleton() {
+  return (
+    <View>
+      <SkeletonBlock width="52%" height={10} />
+      <SkeletonBlock width="68%" height={20} style={styles.skeletonGap} />
+      <View style={[styles.snapshotTilesWeb, styles.skeletonGap]}>
+        {[0, 1, 2, 3].map((item) => (
+          <View key={item} style={styles.snapshotTileWeb}>
+            <SkeletonBlock width="55%" height={10} />
+            <SkeletonBlock width="38%" height={16} style={styles.skeletonGapSmall} />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function NarrativeTile({ eyebrow, title, detail, accent }: { eyebrow: string; title: string; detail: string; accent: 'brand' | 'warn' }) {
   return (
     <View style={styles.narrativeTile}>
@@ -1683,6 +1774,12 @@ const styles = StyleSheet.create({
   inviteBtnText: { color: '#f8fafc', fontSize: 12, fontWeight: '800' },
   survivorBtn: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#38bdf818', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
   survivorBtnText: { color: '#7dd3fc', fontSize: 12, fontWeight: '800' },
+
+  skeletonBlock: { backgroundColor: '#ffffff12' },
+  skeletonRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  skeletonGapLarge: { marginTop: 16 },
+  skeletonGap: { marginTop: 10 },
+  skeletonGapSmall: { marginTop: 7 },
 
   pulsePanel: { marginTop: 20, borderWidth: 1, borderLeftWidth: 3, borderLeftColor: '#0ea5e9', borderColor: '#ffffff1a', backgroundColor: '#ffffff0a', borderRadius: 24, padding: 15 },
   pulseEyebrowRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7 },
