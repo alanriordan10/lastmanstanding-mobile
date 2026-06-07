@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../auth/AuthContext';
 import { authenticateWithBiometrics, getBiometricAvailability, isBiometricLoginEnabled, setBiometricLoginEnabled } from '../auth/biometricAuth';
 import Constants from 'expo-constants';
-import { api } from '../api/client';
+import { api, getApiErrorMessage } from '../api/client';
 import { Card, MetaText, PrimaryButton, ScreenTitle, SectionTitle, StatusPill } from '../components/ui';
 import { colors, spacing } from '../theme/tokens';
 
@@ -21,13 +21,22 @@ type NotificationPreferences = {
 
 const buildVersion = Constants.expoConfig?.android?.versionCode ? String(Constants.expoConfig.android.versionCode) : 'dev';
 
-async function getExpoPushTokenSafe(): Promise<string | null> {
-  if (isExpoGo) return null;
+async function getExpoPushTokenSafe(): Promise<string> {
+  if (isExpoGo) throw new Error('Remote push needs a development or Play Store build.');
 
   const Device = await import('expo-device');
   const Notifications = await import('expo-notifications');
 
-  if (!Device.isDevice) return null;
+  if (!Device.isDevice) throw new Error('Push notifications require a physical device.');
+
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#38bdf8',
+    });
+  }
 
   const existing = await Notifications.getPermissionsAsync();
   let status = existing.status;
@@ -35,10 +44,13 @@ async function getExpoPushTokenSafe(): Promise<string | null> {
     const requested = await Notifications.requestPermissionsAsync();
     status = requested.status;
   }
-  if (status !== 'granted') return null;
+  if (status !== 'granted') throw new Error('Notification permission was not granted.');
 
   const projectId = (Constants as any)?.expoConfig?.extra?.eas?.projectId ?? (Constants as any)?.easConfig?.projectId;
-  const token = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
+  if (!projectId) throw new Error('Missing EAS project ID for push notifications.');
+
+  const token = await Notifications.getExpoPushTokenAsync({ projectId });
+  if (!token.data) throw new Error('Expo did not return a push token.');
   return token.data;
 }
 
@@ -102,21 +114,13 @@ export default function ProfileScreen() {
   };
 
   const onEnablePush = async () => {
-    if (isExpoGo) {
-      setPushStatus('Use a development build for remote push');
-      return;
-    }
     setBusy(true);
     try {
       const token = await getExpoPushTokenSafe();
-      if (!token) {
-        setPushStatus('Permission denied or unsupported device');
-        return;
-      }
-      await api.post('/notifications/mobile/register', { token, platform: 'android' });
+      await api.post('/notifications/mobile/register', { token, platform: Platform.OS });
       setPushStatus('Registered');
-    } catch {
-      setPushStatus('Registration failed');
+    } catch (error: any) {
+      setPushStatus(error?.response ? getApiErrorMessage(error, 'Registration failed') : error?.message ?? 'Registration failed');
     } finally {
       setBusy(false);
     }
@@ -126,11 +130,10 @@ export default function ProfileScreen() {
     setBusy(true);
     try {
       const token = await getExpoPushTokenSafe();
-      if (token) await api.delete('/notifications/mobile/register', { data: { token } });
-      else await api.delete('/notifications/mobile/register');
+      await api.delete('/notifications/mobile/register', { data: { token } });
       setPushStatus('Unregistered');
-    } catch {
-      setPushStatus('Unregister failed');
+    } catch (error: any) {
+      setPushStatus(error?.response ? getApiErrorMessage(error, 'Unregister failed') : error?.message ?? 'Unregister failed');
     } finally {
       setBusy(false);
     }
@@ -249,10 +252,13 @@ export default function ProfileScreen() {
           <SectionTitle>Push Notifications</SectionTitle>
           <Text style={styles.hint}>{isExpoGo ? 'Remote push needs a development build (Expo Go does not support it).' : 'Enable to receive reminders and results on this device.'}</Text>
           <View style={styles.row}>
-            <View style={styles.flexOne}><PrimaryButton label={busy ? 'Please wait...' : 'Enable Push'} onPress={() => void onEnablePush()} disabled={busy || isExpoGo} /></View>
-            <View style={styles.flexOne}><PrimaryButton label="Disable" onPress={() => void onDisablePush()} disabled={busy} /></View>
+            {pushStatus === 'Registered' ? (
+              <View style={styles.flexOne}><PrimaryButton label={busy ? 'Please wait...' : 'Disable Push'} onPress={() => void onDisablePush()} disabled={busy} /></View>
+            ) : (
+              <View style={styles.flexOne}><PrimaryButton label={busy ? 'Please wait...' : 'Enable Push'} onPress={() => void onEnablePush()} disabled={busy || isExpoGo} /></View>
+            )}
           </View>
-          <View style={{ marginTop: 8 }}><StatusPill text={pushStatus} tone={pushStatus === 'Registered' ? 'success' : pushStatus.includes('failed') ? 'danger' : 'neutral'} /></View>
+          <View style={{ marginTop: 8 }}><StatusPill text={pushStatus} tone={pushStatus === 'Registered' ? 'success' : pushStatus.toLowerCase().includes('failed') || pushStatus.toLowerCase().includes('missing') || pushStatus.toLowerCase().includes('denied') || pushStatus.toLowerCase().includes('cannot') ? 'danger' : 'neutral'} /></View>
         </Card>
 
         <Card>
