@@ -402,19 +402,21 @@ export default function CompetitionDetailScreen() {
     return ordered;
   }, [fixtures]);
 
+  const lockedGameweeks = useMemo(
+    () => gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt)),
+    [gameweeks],
+  );
+
   const pickStatsResults = useQueries({
-    queries: gameweeks
-      .filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt))
-      .map((gw) => ({
-        queryKey: ['competition', id, 'pick-stats', gw.gameweekId],
-        queryFn: async () => (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${gw.gameweekId}/pick-stats`)).data ?? [],
-        enabled: Number.isFinite(id),
-        staleTime: 0,
-      })),
+    queries: lockedGameweeks.map((gw) => ({
+      queryKey: ['competition', id, 'pick-stats', gw.gameweekId],
+      queryFn: async () => (await api.get<PickStat[]>(`/competitions/${id}/gameweeks/${gw.gameweekId}/pick-stats`)).data ?? [],
+      enabled: Number.isFinite(id),
+      staleTime: 0,
+    })),
   });
 
   const pickStatsByGameweek = useMemo(() => {
-    const lockedGameweeks = gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt));
     const byGameweek = new Map<number, Map<string, PickStat>>();
     lockedGameweeks.forEach((gw, index) => {
       const rawStats = (pickStatsResults[index]?.data ?? []) as PickStat[];
@@ -436,30 +438,33 @@ export default function CompetitionDetailScreen() {
       byGameweek.set(gw.gameweekId, teamMap);
     });
     return byGameweek;
-  }, [gameweeks, pickStatsResults]);
+  }, [lockedGameweeks, pickStatsResults]);
+
+  const resolvedGameweeks = useMemo(
+    () => gameweeks.filter((gw) => gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED'),
+    [gameweeks],
+  );
+
   const selectionResults = useQueries({
-    queries: gameweeks
-      .filter((gw) => gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED')
-      .map((gw) => ({
-        queryKey: ['competition', id, 'selections', gw.gameweekId],
-        queryFn: async () => {
-          const res = await api.get<GameweekSelectionsData | GameweekSelectionsData['selections']>(`/competitions/${id}/gameweeks/${gw.gameweekId}/selections`);
-          return Array.isArray(res.data) ? { selections: res.data, byeGranted: false, weekNumber: gw.weekNumber } as GameweekSelectionsData : res.data;
-        },
-        enabled: Number.isFinite(id),
-        staleTime: 0,
-      })),
+    queries: resolvedGameweeks.map((gw) => ({
+      queryKey: ['competition', id, 'selections', gw.gameweekId],
+      queryFn: async () => {
+        const res = await api.get<GameweekSelectionsData | GameweekSelectionsData['selections']>(`/competitions/${id}/gameweeks/${gw.gameweekId}/selections`);
+        return Array.isArray(res.data) ? { selections: res.data, byeGranted: false, weekNumber: gw.weekNumber } as GameweekSelectionsData : res.data;
+      },
+      enabled: Number.isFinite(id),
+      staleTime: 0,
+    })),
   });
 
   const selectionsByGameweek = useMemo(() => {
-    const resolvedGameweeks = gameweeks.filter((gw) => gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED');
     const byGameweek = new Map<number, GameweekSelectionsData>();
     resolvedGameweeks.forEach((gw, index) => {
       const data = selectionResults[index]?.data as GameweekSelectionsData | undefined;
       if (data) byGameweek.set(gw.gameweekId, data);
     });
     return byGameweek;
-  }, [gameweeks, selectionResults]);
+  }, [resolvedGameweeks, selectionResults]);
 
   const latestNarrativeWeek = useMemo(() => {
     return [...gameweeks]
@@ -478,6 +483,14 @@ export default function CompetitionDetailScreen() {
     });
     return ids;
   }, [latestNarrativeWeek]);
+  const latestPickStatsIndex = latestNarrativeWeek ? lockedGameweeks.findIndex((gw) => gw.gameweekId === latestNarrativeWeek.gameweekId) : -1;
+  const latestSelectionsIndex = latestNarrativeWeek ? resolvedGameweeks.findIndex((gw) => gw.gameweekId === latestNarrativeWeek.gameweekId) : -1;
+  const latestPickStatsQuery = latestPickStatsIndex >= 0 ? pickStatsResults[latestPickStatsIndex] : undefined;
+  const latestSelectionsQuery = latestSelectionsIndex >= 0 ? selectionResults[latestSelectionsIndex] : undefined;
+  const latestNarrativePickStatsLoading = latestPickStatsIndex >= 0
+    && (latestPickStatsQuery?.data === undefined || Boolean(latestPickStatsQuery?.isFetching));
+  const latestNarrativeSelectionsLoading = latestSelectionsIndex >= 0
+    && (latestSelectionsQuery?.data === undefined || Boolean(latestSelectionsQuery?.isFetching));
 
   const latestNarrativeStats = latestNarrativeWeek
     ? [...(pickStatsByGameweek.get(latestNarrativeWeek.gameweekId)?.values() ?? [])]
@@ -1197,9 +1210,12 @@ export default function CompetitionDetailScreen() {
   const clubPrimaryColor = brandedCompetition?.clubPrimaryColor ?? colors.brand;
   const clubSecondaryColor = brandedCompetition?.clubSecondaryColor ?? clubPrimaryColor;
   const actionBanner = actionSummary;
-  // Keep the skeleton short-lived: the pulse can render from the competition and fixture list.
-  // Pick stats, selections, and participant state continue filling in without blocking the whole hero.
-  const detailFirstLoad = competitionQuery.isLoading || fixturesQuery.isLoading;
+  // Keep provisional pulse text off-screen until the latest narrative week has the stats
+  // and selections that drive the wording. Other queries can still fill in later.
+  const detailFirstLoad = competitionQuery.isLoading
+    || fixturesQuery.isLoading
+    || latestNarrativePickStatsLoading
+    || latestNarrativeSelectionsLoading;
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
