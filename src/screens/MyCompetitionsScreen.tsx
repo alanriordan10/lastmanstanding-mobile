@@ -11,7 +11,7 @@ import { colors, spacing } from '../theme/tokens';
 type MineFilter = 'ALL' | 'NEEDS_ACTION' | 'UPCOMING' | 'ACTIVE' | 'ELIMINATED' | 'FINISHED';
 
 function needsAction(mc: MyCompetition): boolean {
-  return mc.paymentState === 'AWAITING_PAYMENT' || (mc.competition.status === 'UPCOMING' && mc.myStatus === 'ACTIVE');
+  return mc.paymentState === 'AWAITING_PAYMENT' || mc.pickRequired === true;
 }
 
 function toneForStatus(status: string) {

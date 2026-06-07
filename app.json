@@ -2,7 +2,7 @@
   "expo": {
     "name": "Last Man Standing",
     "slug": "lastmanstanding-mobile",
-    "version": "1.0.8",
+    "version": "1.0.10",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,15 +18,32 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#020617"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.lastmanstanding.app",
       "permissions": [],
-      "versionCode": 8,
+      "versionCode": 10,
       "playStoreUrl": "",
-      "blockedPermissions": []
+      "blockedPermissions": [],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "runlastmanstanding.com",
+              "pathPrefix": "/stripe-connect"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

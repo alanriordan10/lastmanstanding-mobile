@@ -230,6 +230,8 @@ export default function CompetitionDetailScreen() {
       }
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] });
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] });
+      queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] });
+      queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] });
     },
     onError: (_error, _vars, context) => {
       setOptimisticPick(null);
@@ -1113,6 +1115,12 @@ export default function CompetitionDetailScreen() {
         urlScheme: 'lastmanstanding',
       });
 
+      const googlePaySupported = await stripe.isPlatformPaySupported({
+        googlePay: {
+          testEnv: publishableKey.startsWith('pk_test'),
+        },
+      });
+
       const initResult = await stripe.initPaymentSheet({
         merchantDisplayName: 'Last Man Standing',
         paymentIntentClientSecret: intent.clientSecret,
@@ -1159,12 +1167,16 @@ export default function CompetitionDetailScreen() {
           currencyCode: 'EUR',
           testEnv: publishableKey.startsWith('pk_test'),
         },
-        paymentMethodOrder: ['card', 'revolut_pay', 'klarna'],
+        paymentMethodOrder: ['google_pay', 'card', 'revolut_pay', 'klarna'],
         allowsDelayedPaymentMethods: false,
       });
 
       if (initResult.error) {
         throw new Error(initResult.error.message ?? 'Could not initialise the payment form.');
+      }
+
+      if (!googlePaySupported) {
+        setPaymentActionSuccess('Google Pay is not available on this device/build, so Stripe will show the other payment options.');
       }
 
       const paymentResult = await stripe.presentPaymentSheet();

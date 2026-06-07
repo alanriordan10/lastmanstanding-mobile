@@ -251,8 +251,8 @@ export default function CompetitionsScreen() {
     return sortCompetitions(rows, (row) => row.competition as CompetitionLike);
   }, [myRows, search, statusFilter, feeFilter, sortBy, startWindow]);
 
-  const mineNeedsAction = filteredMine.filter((row) => row.paymentState === 'AWAITING_PAYMENT' || (row.myStatus === 'ACTIVE' && row.competition.status === 'UPCOMING'));
-  const minePickDue = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'UPCOMING');
+  const mineNeedsAction = filteredMine.filter((row) => row.paymentState === 'AWAITING_PAYMENT' || row.pickRequired === true);
+  const minePickDue = filteredMine.filter((row) => row.pickRequired === true);
   const mineAwaitingPayment = filteredMine.filter((row) => row.paymentState === 'AWAITING_PAYMENT');
   const mineActive = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'ACTIVE');
   const mineUpcoming = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'UPCOMING');
@@ -296,13 +296,13 @@ export default function CompetitionsScreen() {
           priority: 40,
         };
       }
-      if (row.myStatus === 'ACTIVE' && comp.status === 'UPCOMING') {
+      if (row.pickRequired === true) {
         return {
           id: `pick-${baseId}`,
           tone: 'warn' as const,
           label: 'Pick due',
           title: `Pick needed for ${comp.name}`,
-          detail: `Choose your team before the first lock${entrySuffix}.`,
+          detail: `Choose your team before the next lock${entrySuffix}.`,
           competitionId: comp.id,
           priority: 20,
         };

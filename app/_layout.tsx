@@ -26,6 +26,7 @@ export default function RootLayout() {
         <Stack.Screen name="register-club" options={{ title: 'Create Club' }} />
         <Stack.Screen name="faq" options={{ title: 'FAQ' }} />
         <Stack.Screen name="contact" options={{ title: 'Contact Us' }} />
+        <Stack.Screen name="stripe-connect/return" options={{ title: 'Stripe Connect' }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="competitions/[id]" options={{ title: 'Competition' }} />
         <Stack.Screen name="competitions/[id]/pick" options={{ title: 'Make Pick' }} />

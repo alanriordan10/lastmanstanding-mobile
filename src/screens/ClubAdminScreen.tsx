@@ -3,8 +3,8 @@ import Slider from '@react-native-community/slider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useMemo, useState } from 'react';
-import { Image, Linking, Modal, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, Image, Linking, Modal, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
 import type { Club, Competition, Participant } from '../types';
@@ -123,6 +123,7 @@ export default function ClubAdminScreen() {
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [checklistOpen, setChecklistOpen] = useState(false);
   const [stripeOpen, setStripeOpen] = useState(false);
+  const stripeOnboardingPendingRef = useRef(false);
   const [showCompetitionModal, setShowCompetitionModal] = useState(false);
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
@@ -142,6 +143,17 @@ export default function ClubAdminScreen() {
     queryKey: ['club-admin', 'stripe-connect-status'],
     queryFn: async () => (await api.get<StripeConnectStatus>('/club-admin/my-club/stripe/connect/status')).data,
   });
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && stripeOnboardingPendingRef.current) {
+        stripeOnboardingPendingRef.current = false;
+        void stripeStatusQuery.refetch();
+        setOpStatus({ tone: 'info', message: 'Stripe status refreshed. If setup still shows incomplete, continue onboarding in Stripe and complete all required business details.' });
+      }
+    });
+    return () => subscription.remove();
+  }, [stripeStatusQuery.refetch]);
 
   const adminSearchQueryResult = useQuery({
     queryKey: ['club-admin', 'admin-search', adminSearchQuery],
@@ -387,10 +399,16 @@ export default function ClubAdminScreen() {
 
 
   const startStripeConnectMutation = useMutation({
-    mutationFn: async () => (await api.post<{ url?: string }>('/club-admin/my-club/stripe/connect/start')).data,
+    mutationFn: async () => (await api.post<{ onboardingUrl?: string; url?: string }>('/club-admin/my-club/stripe/connect/start')).data,
     onSuccess: async (data) => {
-      if (data?.url) await Linking.openURL(data.url);
-      await stripeStatusQuery.refetch();
+      const onboardingUrl = data?.onboardingUrl ?? data?.url;
+      if (!onboardingUrl) {
+        setOpStatus({ tone: 'error', message: 'Stripe onboarding URL was not returned.' });
+        return;
+      }
+      stripeOnboardingPendingRef.current = true;
+      setOpStatus({ tone: 'info', message: 'Complete the Stripe onboarding steps in the browser, then return to the app. Status will refresh automatically.' });
+      await Linking.openURL(onboardingUrl);
     },
     onError: (e: any) => setOpStatus({ tone: 'error', message: getApiMessage(e, 'Failed to start Stripe onboarding.') }),
   });
@@ -563,11 +581,13 @@ export default function ClubAdminScreen() {
                 </TouchableOpacity>
               </View>
               <View style={styles.stripeInfoBox}><Text style={styles.stripeInfoLabel}>Account</Text><Text style={styles.stripeInfoValue}>{stripeStatus?.stripeAccountId ?? 'Not connected'}</Text></View>
+              {!stripeReady ? <View style={styles.stripeSetupNote}><Text style={styles.stripeSetupNoteText}>Setup is not complete until Stripe shows onboarding complete, charges on, and payouts on. Tap Continue onboarding and finish the required Stripe business details.</Text></View> : null}
               <View style={styles.stripeStatusRow}>
                 <View style={[styles.stripeChip, stripeStatus?.onboardingComplete ? styles.stripeChipGood : styles.stripeChipWarn]}><Text style={styles.stripeChipText}>Onboarding: {stripeStatus?.onboardingComplete ? 'Complete' : 'Incomplete'}</Text></View>
                 <View style={[styles.stripeChip, stripeStatus?.chargesEnabled ? styles.stripeChipGood : styles.stripeChipWarn]}><Text style={styles.stripeChipText}>Charges: {stripeStatus?.chargesEnabled ? 'On' : 'Off'}</Text></View>
                 <View style={[styles.stripeChip, stripeStatus?.payoutsEnabled ? styles.stripeChipGood : styles.stripeChipWarn]}><Text style={styles.stripeChipText}>Payouts: {stripeStatus?.payoutsEnabled ? 'On' : 'Off'}</Text></View>
               </View>
+              <View style={styles.stripeFeeNote}><Text style={styles.stripeFeeNoteText}>Stripe shows the exact processing fee after a payment succeeds, under the payment's balance transaction. The app shows an estimate before payment so entrants know the expected charge/net amount upfront.</Text></View>
             </View>
           ) : null}
         </Card>
@@ -1229,11 +1249,15 @@ const styles = StyleSheet.create({
   stripeInfoBox: { borderWidth: 1, borderColor: '#334155', backgroundColor: '#0b1220', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
   stripeInfoLabel: { color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.7 },
   stripeInfoValue: { color: '#e2e8f0', fontSize: 12, fontWeight: '700', marginTop: 3 },
+  stripeSetupNote: { borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b1a', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
+  stripeSetupNoteText: { color: '#fde68a', fontSize: 11, fontWeight: '800', lineHeight: 16 },
   stripeStatusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   stripeChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5 },
   stripeChipGood: { borderColor: '#22c55e55', backgroundColor: '#22c55e22' },
   stripeChipWarn: { borderColor: '#f59e0b55', backgroundColor: '#f59e0b22' },
   stripeChipText: { color: '#e2e8f0', fontSize: 11, fontWeight: '700' },
+  stripeFeeNote: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91a', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginTop: 8 },
+  stripeFeeNoteText: { color: '#bae6fd', fontSize: 11, fontWeight: '700', lineHeight: 16 },
   webCardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
   webSectionTitle: { color: '#e5e7eb', fontSize: 12, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
   webSectionSub: { color: '#94a3b8', fontSize: 12, lineHeight: 18, marginTop: 5 },
