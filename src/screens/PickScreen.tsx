@@ -58,6 +58,8 @@ export default function PickScreen() {
     }
   }, [currentPick?.teamId, selectedTeamId]);
 
+  const isUnchangedPick = currentPick?.teamId === selectedTeamId;
+
   const teamOptions: TeamOption[] = useMemo(() => (fixturesQuery.data ?? []).flatMap((f) => [
     { id: f.homeTeamId, label: `${f.homeTeamShortName} (${f.homeTeamName})` },
     { id: f.awayTeamId, label: `${f.awayTeamShortName} (${f.awayTeamName})` },
@@ -133,6 +135,7 @@ export default function PickScreen() {
                 disabled={used || mutation.isPending}
                 style={[styles.option, selected ? styles.optionSelected : null, used ? styles.optionUsed : null]}
                 onPress={() => {
+                  if (selected) return;
                   setError(null);
                   setSelectedTeamId(team.id);
                 }}
@@ -147,7 +150,7 @@ export default function PickScreen() {
         </Card>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        <PrimaryButton label={mutation.isPending ? 'Saving...' : 'Save Pick'} onPress={() => mutation.mutate()} disabled={!selectedTeamId || consumedTeamIds.has(selectedTeamId) || mutation.isPending} />
+        <PrimaryButton label={mutation.isPending ? 'Saving...' : 'Save Pick'} onPress={() => mutation.mutate()} disabled={!selectedTeamId || isUnchangedPick || consumedTeamIds.has(selectedTeamId) || mutation.isPending} />
       </ScrollView>
     </SafeAreaView>
   );

@@ -406,26 +406,32 @@ export default function CompetitionsScreen() {
           </View>
 
           {mode === 'available' ? (
-            <View style={styles.availableControlsRow}>
-              <View style={styles.joinCodeStack}>
-                <View style={styles.joinCodeBox}>
-                  <TextInput
-                    value={joinCodeInput}
-                    onChangeText={(value) => { setJoinCodeInput(value.toUpperCase()); setJoinCodeStatus(null); }}
-                    placeholder="Enter join code"
-                    placeholderTextColor="#64748b"
-                    autoCapitalize="characters"
-                    style={styles.joinCodeInput}
-                  />
-                  <TouchableOpacity style={[styles.unlockButton, joinCodeMutation.isPending ? styles.unlockButtonDisabled : null]} onPress={submitJoinCode} disabled={joinCodeMutation.isPending}>
-                    <Text style={styles.unlockButtonText}>{joinCodeMutation.isPending ? 'Joining...' : 'Unlock'}</Text>
-                  </TouchableOpacity>
+            <View style={styles.privateJoinCard}>
+              <View style={styles.privateJoinHeader}>
+                <View style={styles.privateJoinIcon}><Text style={styles.privateJoinIconText}>#</Text></View>
+                <View style={styles.privateJoinCopy}>
+                  <Text style={styles.privateJoinTitle}>Join a private competition</Text>
+                  <Text style={styles.privateJoinHelp}>Enter the invite code from your organiser. If payment is required, you will be taken to the competition payment screen.</Text>
                 </View>
-                {joinCodeStatus ? <Text style={[styles.joinCodeStatus, joinCodeStatus.tone === 'error' ? styles.joinCodeStatusError : joinCodeStatus.tone === 'success' ? styles.joinCodeStatusSuccess : null]}>{joinCodeStatus.message}</Text> : null}
               </View>
+              <View style={styles.joinCodeBox}>
+                <TextInput
+                  value={joinCodeInput}
+                  onChangeText={(value) => { setJoinCodeInput(value.toUpperCase().replace(/\s/g, '')); setJoinCodeStatus(null); }}
+                  placeholder="INVITE CODE"
+                  placeholderTextColor="#64748b"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  style={styles.joinCodeInput}
+                />
+                <TouchableOpacity style={[styles.unlockButton, (!joinCodeInput.trim() || joinCodeMutation.isPending) ? styles.unlockButtonDisabled : null]} onPress={submitJoinCode} disabled={!joinCodeInput.trim() || joinCodeMutation.isPending}>
+                  <Text style={styles.unlockButtonText}>{joinCodeMutation.isPending ? 'Checking...' : 'Join private competition'}</Text>
+                </TouchableOpacity>
+              </View>
+              {joinCodeStatus ? <Text style={[styles.joinCodeStatus, joinCodeStatus.tone === 'error' ? styles.joinCodeStatusError : joinCodeStatus.tone === 'success' ? styles.joinCodeStatusSuccess : null]}>{joinCodeStatus.message}</Text> : null}
               <TouchableOpacity style={[styles.refineButton, showFilters || activeFilterCount > 0 ? styles.refineButtonActive : null]} onPress={() => setShowFilters((v) => !v)}>
                 <Text style={[styles.refineText, showFilters || activeFilterCount > 0 ? styles.refineTextActive : null]}>
-                  Refine{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
+                  Refine public list{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -816,13 +822,20 @@ const styles = StyleSheet.create({
   webSearchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 9 },
   searchClear: { color: '#94a3b8', fontSize: 22, paddingHorizontal: 4 },
   searchInput: { flex: 1, borderWidth: 1, borderColor: '#334155', backgroundColor: '#0f172a', color: colors.text, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
+  privateJoinCard: { gap: 10, borderWidth: 1, borderColor: '#0ea5e944', backgroundColor: '#0ea5e912', borderRadius: 18, padding: 12 },
+  privateJoinHeader: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  privateJoinIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#38bdf826', borderWidth: 1, borderColor: '#38bdf866' },
+  privateJoinIconText: { color: '#7dd3fc', fontSize: 16, fontWeight: '900' },
+  privateJoinCopy: { flex: 1 },
+  privateJoinTitle: { color: '#f8fafc', fontSize: 15, fontWeight: '900' },
+  privateJoinHelp: { color: '#94a3b8', fontSize: 11, lineHeight: 16, marginTop: 3, fontWeight: '700' },
   availableControlsRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   joinCodeStack: { flex: 1, gap: 4 },
-  joinCodeBox: { minHeight: 44, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#0ea5e933', backgroundColor: '#0ea5e912', borderRadius: 13, padding: 6 },
+  joinCodeBox: { minHeight: 48, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#0ea5e955', backgroundColor: '#02061799', borderRadius: 13, padding: 6, gap: 6 },
   joinCodeInput: { flex: 1, color: '#f8fafc', fontSize: 12, paddingHorizontal: 8, paddingVertical: 6 },
-  unlockButton: { borderRadius: 10, backgroundColor: '#38bdf8', paddingHorizontal: 12, paddingVertical: 8 },
+  unlockButton: { borderRadius: 10, backgroundColor: '#38bdf8', paddingHorizontal: 12, paddingVertical: 9, minWidth: 106, alignItems: 'center' },
   unlockButtonDisabled: { opacity: 0.6 },
-  unlockButtonText: { color: '#082f49', fontSize: 12, fontWeight: '900' },
+  unlockButtonText: { color: '#082f49', fontSize: 11, fontWeight: '900', textAlign: 'center' },
   joinCodeStatus: { color: '#93c5fd', fontSize: 11, fontWeight: '800', marginTop: 2 },
   joinCodeStatusError: { color: '#fca5a5' },
   joinCodeStatusSuccess: { color: '#86efac' },

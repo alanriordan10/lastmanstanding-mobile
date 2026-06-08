@@ -18,7 +18,7 @@ type PaymentIntentResponse = {
   amountCents: number;
 };
 
-type GameweekDisplayMode = 'cards' | 'compact';
+type GameweekDisplayMode = 'cards' | 'route';
 
 type PickStat = {
   teamId?: number;
@@ -27,6 +27,65 @@ type PickStat = {
   pickCount: number;
   percentage?: number;
 };
+
+type ConfidenceLabel = 'Safe' | 'Balanced' | 'Bold';
+
+type PickConfidence = {
+  label: ConfidenceLabel;
+  score: number;
+  source: 'odds' | 'crowd' | 'fallback';
+  lowConfidence: boolean;
+};
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function impliedFromDecimalOdds(home?: number | null, draw?: number | null, away?: number | null) {
+  if (!home || !draw || !away || home <= 1 || draw <= 1 || away <= 1) return null;
+  const h = 1 / home;
+  const d = 1 / draw;
+  const a = 1 / away;
+  const total = h + d + a;
+  if (total <= 0) return null;
+  return { home: h / total, draw: d / total, away: a / total };
+}
+
+function calculatePickConfidence(fixture: Fixture, side: 'home' | 'away', pickStat?: PickStat | null, gameweekStatus?: string): PickConfidence | null {
+  if (gameweekStatus !== 'UPCOMING') return null;
+  if (fixture.status === 'FINISHED' || fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED') return null;
+
+  const implied = side === 'home' ? fixture.oddsImpliedHome : fixture.oddsImpliedAway;
+  const impliedFromOdds = impliedFromDecimalOdds(fixture.oddsHomeWin, fixture.oddsDraw, fixture.oddsAwayWin);
+  const pRaw = implied ?? (side === 'home' ? impliedFromOdds?.home ?? NaN : impliedFromOdds?.away ?? NaN);
+  const hasOdds = Number.isFinite(pRaw);
+  const p = clamp01(hasOdds ? pRaw : NaN);
+
+  if (!Number.isFinite(p) && !pickStat) {
+    return null;
+  }
+
+  const oddsRisk = Number.isFinite(p) ? (1 - p) * 100 : null;
+  const crowdRisk = pickStat ? (100 - (pickStat.percentage ?? 0)) : null;
+  const combinedRisk = oddsRisk == null
+    ? crowdRisk
+    : crowdRisk == null
+      ? oddsRisk
+      : (oddsRisk * 0.75) + (crowdRisk * 0.25);
+  if (combinedRisk == null) return null;
+
+  const score = Math.round(combinedRisk);
+  // Football win probabilities are usually tightly grouped, so use thresholds that create useful pick guidance.
+  const label: ConfidenceLabel = score <= 45 ? 'Safe' : score <= 62 ? 'Balanced' : 'Bold';
+  return { label, score, source: hasOdds ? 'odds' : 'crowd', lowConfidence: !hasOdds };
+}
+
+function confidenceHelpText(confidence?: PickConfidence | null): string {
+  if (!confidence) return '';
+  if (confidence.source === 'fallback') return 'Limited data';
+  if (confidence.lowConfidence) return 'Crowd estimate';
+  return 'Odds + crowd';
+}
 
 function parseDate(value?: string | null): Date | null {
   if (!value) return null;
@@ -351,6 +410,13 @@ export default function CompetitionDetailScreen() {
     }
     return ids;
   }, [myStatusQuery.data?.picks, myStatusQuery.data?.usedTeamIds]);
+  const handlePick = (pick: { gwId: number; teamId: number; teamName: string; teamShortName: string; useLifeline: boolean }) => {
+    if (pickMutation.isPending) return;
+    const currentPick = myPickByGameweek.get(pick.gwId);
+    if (currentPick?.teamId === pick.teamId && Boolean(currentPick.useLifeline) === pick.useLifeline) return;
+    pickMutation.mutate(pick);
+  };
+
   const savedLifelineGameweekId = myStatusQuery.data?.picks.find((pick) => pick.useLifeline)?.gameweekId ?? null;
   const pendingLifelineGameweekId = lifelineForGwId ?? (lifelineClearedForGwId != null ? null : savedLifelineGameweekId);
   const lifelineStatusLabel = !competition?.lifelineEnabled
@@ -1026,7 +1092,8 @@ export default function CompetitionDetailScreen() {
   useEffect(() => {
     try {
       const saved = globalThis?.localStorage?.getItem('lms.mobile.gameweekDisplayMode');
-      if (saved === 'cards' || saved === 'compact') setGameweekDisplayMode(saved);
+      if (saved === 'cards' || saved === 'route') setGameweekDisplayMode(saved);
+      if (saved === 'compact') setGameweekDisplayMode('route');
     } catch {}
   }, []);
 
@@ -1035,7 +1102,7 @@ export default function CompetitionDetailScreen() {
     try {
       globalThis?.localStorage?.setItem('lms.mobile.gameweekDisplayMode', mode);
     } catch {}
-    if (mode === 'compact') {
+    if (mode === 'route') {
       setCollapsedWeeks(() => {
         const next = new Set<number>();
         const currentWeekNumber = currentGameweek?.weekNumber ?? gameweeks[gameweeks.length - 1]?.weekNumber;
@@ -1439,9 +1506,9 @@ export default function CompetitionDetailScreen() {
             <Text style={styles.gameweekDisplayTitle}>Gameweek display</Text>
           </View>
           <View style={styles.gameweekDisplaySwitch}>
-            {(['cards', 'compact'] as const).map((mode) => (
+            {(['cards', 'route'] as const).map((mode) => (
               <TouchableOpacity key={mode} style={[styles.gameweekDisplayOption, gameweekDisplayMode === mode ? styles.gameweekDisplayOptionActive : null]} onPress={() => updateGameweekDisplayMode(mode)}>
-                <Text style={[styles.gameweekDisplayOptionText, gameweekDisplayMode === mode ? styles.gameweekDisplayOptionTextActive : null]}>{mode === 'cards' ? 'Cards' : 'Compact'}</Text>
+                <Text style={[styles.gameweekDisplayOptionText, gameweekDisplayMode === mode ? styles.gameweekDisplayOptionTextActive : null]}>{mode === 'cards' ? 'Cards' : 'My Route'}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -1463,9 +1530,9 @@ export default function CompetitionDetailScreen() {
             const lifelineDisabled = isEliminated || isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
             const fixtureCount = gw.fixtures.length;
             const resolvedFixtureCount = gw.fixtures.filter((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED').length;
-            const compactMode = gameweekDisplayMode === 'compact';
+            const routeMode = gameweekDisplayMode === 'route';
             return (
-              <View key={gw.weekNumber} style={[styles.webGameweekCard, gameweekDisplayMode === 'compact' ? styles.webGameweekCardCompact : null, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
+              <View key={gw.weekNumber} style={[styles.webGameweekCard, gameweekDisplayMode === 'route' ? styles.webGameweekCardRoute : null, myPickForGw && !isCompleted ? styles.webGameweekPicked : null, isCompleted ? styles.webGameweekCompleted : null]}>
                 <TouchableOpacity
                   style={styles.webGameweekHeader}
                   onPress={() => setCollapsedWeeks((prev) => {
@@ -1477,7 +1544,7 @@ export default function CompetitionDetailScreen() {
                 >
                   <View style={styles.webGameweekHeaderText}>
                     <View style={styles.webGwTitleRow}>
-                      <Text style={[styles.webGameweekTitle, gameweekDisplayMode === 'compact' ? styles.webGameweekTitleCompact : null]}>Gameweek {gw.weekNumber}</Text>
+                      <Text style={[styles.webGameweekTitle, gameweekDisplayMode === 'route' ? styles.webGameweekTitleRoute : null]}>Gameweek {gw.weekNumber}</Text>
                       <Text style={[styles.webGwBadge, isCompleted ? styles.webGwBadgeGray : isLocked ? styles.webGwBadgeRed : styles.webGwBadgeYellow]}>{isCompleted ? 'Completed' : isLocked ? 'Locked' : `Locks ${distanceToNow(gw.lockAt)}`}</Text>
                     </View>
                     {collapsed && myPickForGw ? <Text style={styles.webCollapsedPick}>Selected: <Text style={[styles.webCollapsedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text></Text> : null}
@@ -1486,12 +1553,12 @@ export default function CompetitionDetailScreen() {
                   <View style={[styles.chevronBox, !collapsed ? styles.chevronBoxOpen : null]}><Text style={styles.chevron}>{collapsed ? '▼' : '▲'}</Text></View>
                 </TouchableOpacity>
 
-                {compactMode ? (
-                  <View style={styles.compactGwSummary}>
-                    <Text style={styles.compactGwSummaryText}>{fixtureCount} fixtures</Text>
-                    <Text style={styles.compactGwSummaryText}>{resolvedFixtureCount}/{fixtureCount} resolved</Text>
-                    {myPickForGw ? <Text style={styles.compactGwSummaryPick}>Pick: {myPickForGw.teamShortName}</Text> : null}
-                    {lifelineChecked ? <Text style={styles.compactGwSummaryLifeline}>Lifeline</Text> : null}
+                {routeMode ? (
+                  <View style={styles.routeGwSummary}>
+                    <Text style={styles.routeGwSummaryText}>{fixtureCount} fixtures</Text>
+                    <Text style={styles.routeGwSummaryText}>{resolvedFixtureCount}/{fixtureCount} resolved</Text>
+                    {myPickForGw ? <Text style={styles.routeGwSummaryPick}>Pick: {myPickForGw.teamShortName}</Text> : <Text style={styles.routeGwSummaryMissing}>No pick</Text>}
+                    {lifelineChecked ? <Text style={styles.routeGwSummaryLifeline}>Lifeline</Text> : null}
                   </View>
                 ) : null}
 
@@ -1507,7 +1574,7 @@ export default function CompetitionDetailScreen() {
                 ) : null}
 
                 {!collapsed ? (
-                  <View style={[styles.fixturesStack, gameweekDisplayMode === 'compact' ? styles.fixturesStackCompact : null]}>
+                  <View style={styles.fixturesStack}>
                     {competition?.lifelineEnabled && isParticipant && !isWinner ? (
                       <TouchableOpacity
                         disabled={lifelineDisabled}
@@ -1520,7 +1587,7 @@ export default function CompetitionDetailScreen() {
                             setLifelineForGwId(gw.gameweekId);
                           }
                         }}
-                        style={[styles.lifelineBox, compactMode ? styles.lifelineBoxCompact : null, lifelineChecked ? styles.lifelineBoxSelected : null, lifelineDisabled && !lifelineChecked ? styles.lifelineBoxDisabled : null]}
+                        style={[styles.lifelineBox, lifelineChecked ? styles.lifelineBoxSelected : null, lifelineDisabled && !lifelineChecked ? styles.lifelineBoxDisabled : null]}
                       >
                         <View style={styles.lifelineCheckboxRow}>
                           <View style={[styles.lifelineCheckbox, lifelineChecked ? styles.lifelineCheckboxChecked : null, lifelineDisabled && !lifelineChecked ? styles.lifelineCheckboxDisabled : null]}>
@@ -1528,7 +1595,7 @@ export default function CompetitionDetailScreen() {
                           </View>
                           <View style={styles.lifelineTextCol}>
                             <Text style={styles.lifelineBoxText}>{isEliminated ? 'Lifeline unavailable because this entry is eliminated' : participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
-                            {!participant?.lifelineUsed && !isEliminated && !compactMode ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
+                            {!participant?.lifelineUsed && !isEliminated && !routeMode ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
                           </View>
                         </View>
                       </TouchableOpacity>
@@ -1536,7 +1603,17 @@ export default function CompetitionDetailScreen() {
                     {isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek && gw.gameweekStatus !== 'COMPLETED' ? (
                       <View style={styles.eliminatedBox}><Text style={styles.eliminatedBoxText}>{selectedEntryLabel ?? 'This entry'} was eliminated in Gameweek {participant.eliminatedWeek} and cannot make picks for this gameweek.</Text></View>
                     ) : null}
-                    {gw.fixtures.map((f) => {
+                    {routeMode ? (
+                      <MyRoutePanel
+                        teams={uniqueTeamsForFixtures(gw.fixtures, gw.gameweekId, gw.gameweekStatus, (teamId, shortName, name) => getTeamPickStat(gw.gameweekId, teamId, shortName, name))}
+                        currentPick={myPickForGw ?? null}
+                        consumedTeamIds={consumedTeamIds}
+                        canPick={isParticipant && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !(isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek) && selectedEntry?.status === 'ACTIVE'}
+                        saving={pickMutation.isPending}
+                        lifelineChecked={lifelineChecked}
+                        onPick={(team) => handlePick({ gwId: gw.gameweekId, teamId: team.teamId, teamName: team.teamName, teamShortName: team.teamShortName, useLifeline: lifelineChecked })}
+                      />
+                    ) : gw.fixtures.map((f) => {
                       const eliminatedBeforeThisGw = isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek;
                       const canPickThisGw = isParticipant && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
                       const homeIsMyPick = myPickForGw?.teamId === f.homeTeamId;
@@ -1545,11 +1622,13 @@ export default function CompetitionDetailScreen() {
                       const awayUsed = consumedTeamIds.has(f.awayTeamId) && !awayIsMyPick;
                       const homePickStat = getTeamPickStat(gw.gameweekId, f.homeTeamId, f.homeTeamShortName, f.homeTeamName);
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
+                      const homeConfidence = calculatePickConfidence(f, 'home', homePickStat, gw.gameweekStatus);
+                      const awayConfidence = calculatePickConfidence(f, 'away', awayPickStat, gw.gameweekStatus);
                       return (
-                        <View key={f.id} style={[styles.webFixtureRow, compactMode ? styles.webFixtureRowCompact : null]}>
-                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} compact={compactMode} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
-                          <FixtureCenter fixture={f} compact={compactMode} />
-                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} compact={compactMode} onPress={() => pickMutation.mutate({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
+                        <View key={f.id} style={styles.webFixtureRow}>
+                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} confidence={homeConfidence} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
+                          <FixtureCenter fixture={f} />
+                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} confidence={awayConfidence} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
                         </View>
                       );
                     })}
@@ -1745,7 +1824,7 @@ function FixtureCenter({ fixture, compact }: { fixture: Fixture; compact?: boole
   return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={[styles.kickDate, compact ? styles.kickDateCompact : null]}>{formatKickoffDate(fixture.kickoffAt)}</Text><Text style={[styles.kickTime, compact ? styles.kickTimeCompact : null]}>{formatKickoffTime(fixture.kickoffAt)}</Text></View>;
 }
 
-function TeamPickSide({ align, name, shortName, picked, used, pickStat, clickable, compact, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; clickable: boolean; compact?: boolean; onPress: () => void }) {
+function TeamPickSide({ align, name, shortName, picked, used, pickStat, confidence, clickable, compact, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; confidence?: PickConfidence | null; clickable: boolean; compact?: boolean; onPress: () => void }) {
   return (
     <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, compact ? styles.webTeamSideCompact : null, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, clickable && !picked ? styles.webTeamClickable : null]}>
       <View style={[styles.webTeamLine, align === 'right' ? styles.webTeamLineRight : null]}>
@@ -1753,13 +1832,147 @@ function TeamPickSide({ align, name, shortName, picked, used, pickStat, clickabl
         {(picked || used) ? <Text style={[styles.webTeamStatus, picked ? styles.webTeamPickedText : styles.webTeamUsedText]}>{picked ? 'Picked' : 'Used'}</Text> : null}
       </View>
       {!compact ? <Text style={[styles.webTeamName, align === 'right' ? styles.webTeamNameRight : null]} numberOfLines={1}>{name}</Text> : null}
-      {pickStat && !compact ? (
-        <View style={[styles.webPickStatBadge, picked ? styles.webPickStatBadgePicked : null, align === 'right' ? styles.webPickStatBadgeRight : null]}>
-          <Text style={[styles.webPickStatText, picked ? styles.webPickStatTextPicked : null]}>{pickStat.percentage ?? 0}%</Text>
-          <Text style={[styles.webPickStatSubText, picked ? styles.webPickStatSubTextPicked : null]}>· {pickStat.pickCount} {pickStat.pickCount === 1 ? 'player' : 'players'}</Text>
+      {(pickStat || confidence) && !compact ? (
+        <View style={[styles.webPickMetaRow, align === 'right' ? styles.webPickMetaRowRight : null]}>
+          {confidence ? <ConfidenceBadge confidence={confidence} picked={picked} /> : null}
+          {pickStat ? (
+            <View style={[styles.webPickStatBadge, picked ? styles.webPickStatBadgePicked : null]}>
+              <Text style={[styles.webPickStatText, picked ? styles.webPickStatTextPicked : null]}>{pickStat.percentage ?? 0}%</Text>
+              <Text style={[styles.webPickStatSubText, picked ? styles.webPickStatSubTextPicked : null]}>· {pickStat.pickCount} {pickStat.pickCount === 1 ? 'player' : 'players'}</Text>
+            </View>
+          ) : null}
         </View>
       ) : null}
     </TouchableOpacity>
+  );
+}
+
+function ConfidenceBadge({ confidence, picked, showDetail = false }: { confidence: PickConfidence; picked?: boolean; showDetail?: boolean }) {
+  return (
+    <View style={[
+      styles.confidenceBadge,
+      confidence.label === 'Safe' ? styles.confidenceSafe : confidence.label === 'Balanced' ? styles.confidenceBalanced : styles.confidenceBold,
+      picked ? styles.confidencePicked : null,
+    ]}>
+      <Text style={[styles.confidenceBadgeText, picked ? styles.confidenceBadgeTextPicked : null]} numberOfLines={1}>{confidence.label}</Text>
+      {showDetail ? <Text style={[styles.confidenceBadgeSubText, picked ? styles.confidenceBadgeTextPicked : null]} numberOfLines={1}>{confidenceHelpText(confidence)}</Text> : null}
+    </View>
+  );
+}
+
+type RouteTeam = {
+  teamId: number;
+  teamName: string;
+  teamShortName: string;
+  opponentShortName: string;
+  opponentName: string;
+  venueLabel: string;
+  confidence?: PickConfidence | null;
+};
+
+function uniqueTeamsForFixtures(fixtures: Fixture[], gameweekId: number, gameweekStatus: string, getPickStat: (teamId: number, teamShortName: string, teamName: string) => PickStat | null): RouteTeam[] {
+  const map = new Map<number, RouteTeam>();
+  for (const fixture of fixtures) {
+    const homeStat = getPickStat(fixture.homeTeamId, fixture.homeTeamShortName, fixture.homeTeamName);
+    const awayStat = getPickStat(fixture.awayTeamId, fixture.awayTeamShortName, fixture.awayTeamName);
+    map.set(fixture.homeTeamId, {
+      teamId: fixture.homeTeamId,
+      teamName: fixture.homeTeamName,
+      teamShortName: fixture.homeTeamShortName,
+      opponentShortName: fixture.awayTeamShortName,
+      opponentName: fixture.awayTeamName,
+      venueLabel: 'vs',
+      confidence: calculatePickConfidence(fixture, 'home', homeStat, gameweekStatus),
+    });
+    map.set(fixture.awayTeamId, {
+      teamId: fixture.awayTeamId,
+      teamName: fixture.awayTeamName,
+      teamShortName: fixture.awayTeamShortName,
+      opponentShortName: fixture.homeTeamShortName,
+      opponentName: fixture.homeTeamName,
+      venueLabel: '@',
+      confidence: calculatePickConfidence(fixture, 'away', awayStat, gameweekStatus),
+    });
+  }
+  return Array.from(map.values()).sort((a, b) => a.teamShortName.localeCompare(b.teamShortName));
+}
+
+function MyRoutePanel({
+  teams,
+  currentPick,
+  consumedTeamIds,
+  canPick,
+  saving,
+  lifelineChecked,
+  onPick,
+}: {
+  teams: RouteTeam[];
+  currentPick: { teamId: number; teamName: string; teamShortName: string; outcome?: string; useLifeline?: boolean } | null;
+  consumedTeamIds: Set<number>;
+  canPick: boolean;
+  saving: boolean;
+  lifelineChecked: boolean;
+  onPick: (team: RouteTeam) => void;
+}) {
+  const usedInThisGameweek = teams.filter((team) => consumedTeamIds.has(team.teamId) && currentPick?.teamId !== team.teamId);
+  const availableTeams = teams.filter((team) => !consumedTeamIds.has(team.teamId) || currentPick?.teamId === team.teamId);
+  const currentPickFixture = currentPick ? teams.find((team) => team.teamId === currentPick.teamId) : null;
+
+  return (
+    <View style={styles.routePanel}>
+      <View style={styles.routeCurrentCard}>
+        <Text style={styles.routeEyebrow}>Your route</Text>
+        {currentPick ? (
+          <>
+            <Text style={styles.routeCurrentPick}>{currentPick.teamShortName}</Text>
+            <Text style={styles.routeCurrentMeta}>{currentPick.teamName}{currentPick.outcome && currentPick.outcome !== 'PENDING' ? ` · ${outcomeText(currentPick.outcome)}` : ''}</Text>
+            {currentPickFixture ? <Text style={styles.routeOpponentMeta}>{currentPickFixture.venueLabel} {currentPickFixture.opponentShortName} · {currentPickFixture.opponentName}</Text> : null}
+            {currentPickFixture?.confidence ? <View style={styles.routeCurrentConfidence}><ConfidenceBadge confidence={currentPickFixture.confidence} picked showDetail /></View> : null}
+          </>
+        ) : (
+          <>
+            <Text style={styles.routeCurrentPickMissing}>No pick yet</Text>
+            <Text style={styles.routeCurrentMeta}>{canPick ? 'Choose from the available teams below.' : 'No pick can be made for this gameweek.'}</Text>
+          </>
+        )}
+        {lifelineChecked ? <Text style={styles.routeLifelineTag}>Lifeline selected</Text> : null}
+      </View>
+
+      <View style={styles.routeStatsRow}>
+        <View style={styles.routeStatBox}><Text style={styles.routeStatValue}>{availableTeams.length}</Text><Text style={styles.routeStatLabel}>Available here</Text></View>
+        <View style={styles.routeStatBox}><Text style={styles.routeStatValue}>{usedInThisGameweek.length}</Text><Text style={styles.routeStatLabel}>Already used</Text></View>
+      </View>
+
+      {usedInThisGameweek.length > 0 ? (
+        <View style={styles.routeSection}>
+          <Text style={styles.routeSectionTitle}>Used before</Text>
+          <View style={styles.routeChipWrap}>
+            {usedInThisGameweek.map((team) => <Text key={team.teamId} style={styles.routeUsedChip}>{team.teamShortName}</Text>)}
+          </View>
+        </View>
+      ) : null}
+
+      <View style={styles.routeSection}>
+        <Text style={styles.routeSectionTitle}>Available teams this gameweek</Text>
+        <View style={styles.routeChipWrap}>
+          {availableTeams.map((team) => {
+            const picked = currentPick?.teamId === team.teamId;
+            return (
+              <TouchableOpacity
+                key={team.teamId}
+                disabled={!canPick || saving || picked}
+                onPress={() => onPick(team)}
+                style={[styles.routeTeamChip, picked ? styles.routeTeamChipPicked : null, (!canPick || saving) && !picked ? styles.routeTeamChipDisabled : null]}
+              >
+                <Text style={[styles.routeTeamChipText, picked ? styles.routeTeamChipTextPicked : null]}>{team.teamShortName}</Text>
+                <Text style={[styles.routeTeamChipSub, picked ? styles.routeTeamChipTextPicked : null]} numberOfLines={1}>{picked ? 'Picked' : `${team.venueLabel} ${team.opponentShortName}`}</Text>
+                {team.confidence ? <Text style={[styles.routeTeamChipConfidence, picked ? styles.routeTeamChipTextPicked : null]}>{team.confidence.label}</Text> : null}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -1918,22 +2131,23 @@ const styles = StyleSheet.create({
   gameweekDisplayOptionTextActive: { color: '#bae6fd' },
   gameweeksSection: { gap: 12 },
   webGameweekCard: { borderWidth: 1, borderColor: '#253247', backgroundColor: '#111827', borderRadius: 18, padding: 14, overflow: 'hidden' },
-  webGameweekCardCompact: { padding: 10, borderRadius: 15 },
+  webGameweekCardRoute: { padding: 10, borderRadius: 15 },
   webGameweekPicked: { borderColor: '#0ea5e966' },
   webGameweekCompleted: { borderColor: '#37415166', opacity: 0.86 },
   webGameweekHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   webGameweekHeaderText: { flex: 1 },
   webGwTitleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   webGameweekTitle: { color: '#fff', fontSize: 18, fontWeight: '900' },
-  webGameweekTitleCompact: { fontSize: 16 },
+  webGameweekTitleRoute: { fontSize: 16 },
   webGwBadge: { overflow: 'hidden', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
   webGwBadgeGray: { color: '#d1d5db', backgroundColor: '#ffffff18' },
   webGwBadgeRed: { color: '#fca5a5', backgroundColor: '#ef444422' },
   webGwBadgeYellow: { color: '#fcd34d', backgroundColor: '#f59e0b22' },
-  compactGwSummary: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  compactGwSummaryText: { overflow: 'hidden', color: '#94a3b8', borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '800' },
-  compactGwSummaryPick: { overflow: 'hidden', color: '#7dd3fc', borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e922', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
-  compactGwSummaryLifeline: { overflow: 'hidden', color: '#a5f3fc', borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
+  routeGwSummary: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  routeGwSummaryText: { overflow: 'hidden', color: '#94a3b8', borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '800' },
+  routeGwSummaryPick: { overflow: 'hidden', color: '#7dd3fc', borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e922', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
+  routeGwSummaryLifeline: { overflow: 'hidden', color: '#a5f3fc', borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
+  routeGwSummaryMissing: { overflow: 'hidden', color: '#fcd34d', borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b22', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, fontSize: 10, fontWeight: '900' },
   webCollapsedPick: { color: '#94a3b8', fontSize: 12, marginTop: 5 },
   webCollapsedPickTeam: { color: '#38bdf8', fontWeight: '900' },
   webExpandedPick: { color: '#d1d5db', fontSize: 12, marginTop: -2, marginBottom: 8, paddingHorizontal: 2 },
@@ -1950,9 +2164,7 @@ const styles = StyleSheet.create({
   selectionLink: { color: '#38bdf8', fontSize: 12, fontWeight: '800' },
   resultsLink: { color: '#4ade80', fontSize: 12, fontWeight: '900' },
   fixturesStack: { gap: 8, marginTop: 14 },
-  fixturesStackCompact: { gap: 6, marginTop: 10 },
   lifelineBox: { borderWidth: 1, borderColor: '#06b6d455', backgroundColor: '#06b6d422', borderRadius: 12, padding: 10 },
-  lifelineBoxCompact: { padding: 8, borderRadius: 10 },
   lifelineBoxSelected: { borderColor: '#22d3ee', backgroundColor: '#06b6d433' },
   lifelineBoxDisabled: { opacity: 0.55 },
   lifelineCheckboxRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
@@ -1966,7 +2178,30 @@ const styles = StyleSheet.create({
   eliminatedBox: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422', borderRadius: 10, padding: 10 },
   eliminatedBoxText: { color: '#fca5a5', fontSize: 12, fontWeight: '800' },
   webFixtureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: '#1f293780', paddingHorizontal: 10, paddingVertical: 8 },
-  webFixtureRowCompact: { gap: 5, borderRadius: 9, paddingHorizontal: 7, paddingVertical: 5 },
+  routePanel: { gap: 10, borderWidth: 1, borderColor: '#334155', backgroundColor: '#0b1220', borderRadius: 16, padding: 12 },
+  routeCurrentCard: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91a', borderRadius: 14, padding: 12 },
+  routeEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', letterSpacing: 1.8, textTransform: 'uppercase' },
+  routeCurrentPick: { color: '#ffffff', fontSize: 28, fontWeight: '900', marginTop: 4 },
+  routeCurrentPickMissing: { color: '#fcd34d', fontSize: 18, fontWeight: '900', marginTop: 6 },
+  routeCurrentMeta: { color: '#cbd5e1', fontSize: 12, fontWeight: '700', marginTop: 2 },
+  routeOpponentMeta: { color: '#7dd3fc', fontSize: 12, fontWeight: '900', marginTop: 4 },
+  routeLifelineTag: { alignSelf: 'flex-start', overflow: 'hidden', borderRadius: 999, backgroundColor: '#06b6d433', color: '#a5f3fc', paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: '900', marginTop: 8 },
+  routeCurrentConfidence: { marginTop: 8, alignSelf: 'flex-start' },
+  routeStatsRow: { flexDirection: 'row', gap: 8 },
+  routeStatBox: { flex: 1, borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#111827', borderRadius: 12, padding: 10 },
+  routeStatValue: { color: '#ffffff', fontSize: 20, fontWeight: '900' },
+  routeStatLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1.1, marginTop: 2 },
+  routeSection: { gap: 8 },
+  routeSectionTitle: { color: '#cbd5e1', fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
+  routeChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  routeUsedChip: { overflow: 'hidden', borderRadius: 999, borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b1a', color: '#fcd34d', paddingHorizontal: 10, paddingVertical: 6, fontSize: 12, fontWeight: '900', textDecorationLine: 'line-through' },
+  routeTeamChip: { width: '30.5%', minWidth: 86, borderRadius: 12, borderWidth: 1, borderColor: '#334155', backgroundColor: '#1f2937', paddingHorizontal: 8, paddingVertical: 8 },
+  routeTeamChipPicked: { borderColor: '#7dd3fc', backgroundColor: '#0284c7' },
+  routeTeamChipDisabled: { opacity: 0.55 },
+  routeTeamChipText: { color: '#e5e7eb', fontSize: 14, fontWeight: '900' },
+  routeTeamChipTextPicked: { color: '#ffffff' },
+  routeTeamChipSub: { color: '#94a3b8', fontSize: 9, fontWeight: '700', marginTop: 2 },
+  routeTeamChipConfidence: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', marginTop: 4 },
   webTeamSide: { flex: 1, minHeight: 48, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 5, justifyContent: 'center' },
   webTeamSideCompact: { minHeight: 34, borderRadius: 8, paddingHorizontal: 5, paddingVertical: 4 },
   webTeamRight: { alignItems: 'flex-end' },
@@ -1981,7 +2216,17 @@ const styles = StyleSheet.create({
   webTeamName: { color: '#94a3b8', fontSize: 10, marginTop: 3, maxWidth: 110 },
   webTeamNameRight: { textAlign: 'right' },
   webTeamStatus: { overflow: 'hidden', borderRadius: 999, backgroundColor: '#ffffff22', paddingHorizontal: 5, paddingVertical: 2, fontSize: 8, fontWeight: '900', textTransform: 'uppercase' },
-  webPickStatBadge: { marginTop: 6, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', maxWidth: 112, borderRadius: 999, backgroundColor: '#ffffff14', paddingHorizontal: 6, paddingVertical: 3 },
+  webPickMetaRow: { marginTop: 6, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 5, maxWidth: 116 },
+  webPickMetaRowRight: { alignSelf: 'flex-end', justifyContent: 'flex-end' },
+  confidenceBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 3, maxWidth: 96, flexShrink: 1 },
+  confidenceSafe: { backgroundColor: '#22c55e26', borderWidth: 1, borderColor: '#22c55e55' },
+  confidenceBalanced: { backgroundColor: '#f59e0b26', borderWidth: 1, borderColor: '#f59e0b55' },
+  confidenceBold: { backgroundColor: '#06b6d426', borderWidth: 1, borderColor: '#06b6d455' },
+  confidencePicked: { backgroundColor: '#ffffff26', borderColor: '#ffffff44' },
+  confidenceBadgeText: { color: '#e5e7eb', fontSize: 9, fontWeight: '900', flexShrink: 1 },
+  confidenceBadgeSubText: { color: '#cbd5e1', opacity: 0.75, fontSize: 8, fontWeight: '700', flexShrink: 1 },
+  confidenceBadgeTextPicked: { color: '#ffffff' },
+  webPickStatBadge: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', maxWidth: 108, borderRadius: 999, backgroundColor: '#ffffff14', paddingHorizontal: 6, paddingVertical: 3 },
   webPickStatBadgeRight: { alignSelf: 'flex-end' },
   webPickStatBadgePicked: { backgroundColor: '#ffffff26' },
   webPickStatText: { color: '#d1d5db', fontSize: 9, fontWeight: '900' },
