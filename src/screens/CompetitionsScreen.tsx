@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { api } from '../api/client';
 import type { Competition, MyCompetition } from '../types';
 import { FilterPill, MetaText, ScreenTitle, StatusPill } from '../components/ui';
+import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
 
 type StatusFilter = 'ALL' | 'UPCOMING' | 'ACTIVE';
@@ -90,6 +91,7 @@ export default function CompetitionsScreen() {
   const [search, setSearch] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [joinCodeStatus, setJoinCodeStatus] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [pendingInviteCompetition, setPendingInviteCompetition] = useState<Competition | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [feeFilter, setFeeFilter] = useState<FeeFilter>('ALL');
   const [sortBy, setSortBy] = useState<SortBy>('date');
@@ -134,8 +136,25 @@ export default function CompetitionsScreen() {
 
 
   const joinCodeMutation = useMutation({
-    mutationFn: async (code: string) => {
-      const competition = (await api.get<Competition>(`/competitions/code/${encodeURIComponent(code)}`)).data;
+    mutationFn: async (code: string) => (await api.get<Competition>(`/competitions/code/${encodeURIComponent(code)}`)).data,
+    onSuccess: (competition) => {
+      setPendingInviteCompetition(competition);
+      setSearch('');
+      setMode('available');
+      setJoinCodeStatus({ tone: 'info', message: `${competition.name} found. Review details and confirm below.` });
+    },
+    onError: (error: any) => {
+      const status = error?.response?.status;
+      const message = error?.response?.data?.message
+        ?? error?.response?.data?.error
+        ?? (status === 404 ? 'Invite code not found.' : 'Could not join with that invite code.');
+      setPendingInviteCompetition(null);
+      setJoinCodeStatus({ tone: 'error', message });
+    },
+  });
+
+  const confirmInviteJoinMutation = useMutation({
+    mutationFn: async (competition: Competition) => {
       const requiresOnlinePayment = competition.paymentMode === 'STRIPE' && (competition.entryFee ?? 0) > 0;
       if (!requiresOnlinePayment) {
         await api.post(`/competitions/${competition.id}/join`);
@@ -144,7 +163,7 @@ export default function CompetitionsScreen() {
     },
     onSuccess: async ({ competition, requiresOnlinePayment }) => {
       setJoinCodeInput('');
-      setSearch('');
+      setPendingInviteCompetition(null);
       setMode(requiresOnlinePayment ? 'available' : 'mine');
       setJoinCodeStatus({
         tone: requiresOnlinePayment ? 'info' : 'success',
@@ -156,10 +175,7 @@ export default function CompetitionsScreen() {
       router.push(`/competitions/${competition.id}`);
     },
     onError: (error: any) => {
-      const status = error?.response?.status;
-      const message = error?.response?.data?.message
-        ?? error?.response?.data?.error
-        ?? (status === 404 ? 'Invite code not found.' : 'Could not join with that invite code.');
+      const message = error?.response?.data?.message ?? error?.response?.data?.error ?? 'Could not join this competition.';
       setJoinCodeStatus({ tone: 'error', message });
     },
   });
@@ -167,6 +183,7 @@ export default function CompetitionsScreen() {
   const all = (competitionsQuery.data ?? []) as CompetitionLike[];
   const myRows = myDetailsQuery.data ?? [];
   const isRefreshing = competitionsQuery.isRefetching || myDetailsQuery.isRefetching;
+  const lastUpdatedAt = Math.max(competitionsQuery.dataUpdatedAt || 0, myDetailsQuery.dataUpdatedAt || 0);
   const myJoinedIds = useMemo(() => new Set(myRows.map((m) => m.competition.id)), [myRows]);
   const myEntryCountByCompetition = useMemo(() => {
     const counts = new Map<number, number>();
@@ -361,6 +378,7 @@ export default function CompetitionsScreen() {
       setJoinCodeStatus({ tone: 'error', message: 'Enter an invite code first.' });
       return;
     }
+    setPendingInviteCompetition(null);
     setJoinCodeStatus({ tone: 'info', message: `Checking invite code ${code}...` });
     joinCodeMutation.mutate(code);
   };
@@ -386,6 +404,8 @@ export default function CompetitionsScreen() {
             </View>
           </View>
         </View>
+
+        <DataFreshnessBar label="Competition data" updatedAt={lastUpdatedAt || null} refreshing={isRefreshing} onRefresh={refresh} />
 
         {activityItems.length > 0 ? (
           <ActivityPanel items={activityItems} onOpen={(competitionId) => router.push(`/competitions/${competitionId}`)} />
@@ -417,18 +437,52 @@ export default function CompetitionsScreen() {
               <View style={styles.joinCodeBox}>
                 <TextInput
                   value={joinCodeInput}
-                  onChangeText={(value) => { setJoinCodeInput(value.toUpperCase().replace(/\s/g, '')); setJoinCodeStatus(null); }}
+                  onChangeText={(value) => { setJoinCodeInput(value.toUpperCase().replace(/\s/g, '')); setJoinCodeStatus(null); setPendingInviteCompetition(null); }}
                   placeholder="INVITE CODE"
                   placeholderTextColor="#64748b"
                   autoCapitalize="characters"
                   autoCorrect={false}
                   style={styles.joinCodeInput}
                 />
-                <TouchableOpacity style={[styles.unlockButton, (!joinCodeInput.trim() || joinCodeMutation.isPending) ? styles.unlockButtonDisabled : null]} onPress={submitJoinCode} disabled={!joinCodeInput.trim() || joinCodeMutation.isPending}>
-                  <Text style={styles.unlockButtonText}>{joinCodeMutation.isPending ? 'Checking...' : 'Join private competition'}</Text>
+                <TouchableOpacity style={[styles.unlockButton, (!joinCodeInput.trim() || joinCodeMutation.isPending || confirmInviteJoinMutation.isPending) ? styles.unlockButtonDisabled : null]} onPress={submitJoinCode} disabled={!joinCodeInput.trim() || joinCodeMutation.isPending || confirmInviteJoinMutation.isPending}>
+                  <Text style={styles.unlockButtonText}>{joinCodeMutation.isPending ? 'Checking...' : 'Preview invite'}</Text>
                 </TouchableOpacity>
               </View>
               {joinCodeStatus ? <Text style={[styles.joinCodeStatus, joinCodeStatus.tone === 'error' ? styles.joinCodeStatusError : joinCodeStatus.tone === 'success' ? styles.joinCodeStatusSuccess : null]}>{joinCodeStatus.message}</Text> : null}
+              {pendingInviteCompetition ? (
+                <View style={styles.invitePreviewCard}>
+                  <Text style={styles.invitePreviewEyebrow}>Invite preview</Text>
+                  <Text style={styles.invitePreviewTitle}>{pendingInviteCompetition.name}</Text>
+                  <Text style={styles.invitePreviewMeta}>
+                    {pendingInviteCompetition.status} · {pendingInviteCompetition.participantCount ?? 0} players · {(pendingInviteCompetition.entryFee ?? 0) > 0 ? `€${pendingInviteCompetition.entryFee}` : 'Free'}
+                  </Text>
+                  <Text style={styles.invitePreviewHelp}>
+                    {pendingInviteCompetition.paymentMode === 'STRIPE' && (pendingInviteCompetition.entryFee ?? 0) > 0
+                      ? 'Online payment is required before your entry is confirmed.'
+                      : pendingInviteCompetition.paymentMode === 'MANUAL' && (pendingInviteCompetition.entryFee ?? 0) > 0
+                        ? 'You will be registered and the organiser will confirm payment.'
+                        : 'No payment is required for this competition.'}
+                  </Text>
+                  <View style={styles.invitePreviewActions}>
+                    <TouchableOpacity
+                      style={[styles.inviteConfirmButton, confirmInviteJoinMutation.isPending ? styles.unlockButtonDisabled : null]}
+                      disabled={confirmInviteJoinMutation.isPending}
+                      onPress={() => confirmInviteJoinMutation.mutate(pendingInviteCompetition)}
+                    >
+                      <Text style={styles.inviteConfirmText}>
+                        {confirmInviteJoinMutation.isPending
+                          ? 'Working...'
+                          : pendingInviteCompetition.paymentMode === 'STRIPE' && (pendingInviteCompetition.entryFee ?? 0) > 0
+                            ? 'Continue to payment'
+                            : 'Join competition'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setPendingInviteCompetition(null); setJoinCodeInput(''); setJoinCodeStatus(null); }}>
+                      <Text style={styles.inviteClearText}>Clear invite</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : null}
               <TouchableOpacity style={[styles.refineButton, showFilters || activeFilterCount > 0 ? styles.refineButtonActive : null]} onPress={() => setShowFilters((v) => !v)}>
                 <Text style={[styles.refineText, showFilters || activeFilterCount > 0 ? styles.refineTextActive : null]}>
                   Refine public list{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
@@ -839,6 +893,15 @@ const styles = StyleSheet.create({
   joinCodeStatus: { color: '#93c5fd', fontSize: 11, fontWeight: '800', marginTop: 2 },
   joinCodeStatusError: { color: '#fca5a5' },
   joinCodeStatusSuccess: { color: '#86efac' },
+  invitePreviewCard: { gap: 6, borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91a', borderRadius: 14, padding: 12 },
+  invitePreviewEyebrow: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
+  invitePreviewTitle: { color: '#f8fafc', fontSize: 17, fontWeight: '900' },
+  invitePreviewMeta: { color: '#cbd5e1', fontSize: 12, fontWeight: '800' },
+  invitePreviewHelp: { color: '#94a3b8', fontSize: 11, lineHeight: 16, fontWeight: '700' },
+  invitePreviewActions: { marginTop: 4, gap: 8 },
+  inviteConfirmButton: { borderRadius: 11, backgroundColor: '#38bdf8', paddingHorizontal: 12, paddingVertical: 11, alignItems: 'center' },
+  inviteConfirmText: { color: '#082f49', fontSize: 12, fontWeight: '900' },
+  inviteClearText: { color: '#94a3b8', fontSize: 11, fontWeight: '800', textAlign: 'center', textDecorationLine: 'underline' },
   refineButton: { borderWidth: 1, borderColor: '#475569', backgroundColor: '#172033', borderRadius: 12, minHeight: 44, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   refineButtonActive: { borderColor: '#38bdf880', backgroundColor: '#0ea5e926' },
   refineText: { color: '#cbd5e1', fontSize: 12, fontWeight: '800' },

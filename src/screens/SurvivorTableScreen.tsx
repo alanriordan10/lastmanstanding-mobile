@@ -6,12 +6,18 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api } from '../api/client';
 import type { Competition, SurvivorRow, SurvivorTableResponse } from '../types';
 import { Card, FilterPill, MetaText, ScreenTitle, StatusPill } from '../components/ui';
+import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
 
 type StatusFilter = 'ALL' | 'ACTIVE' | 'ELIMINATED' | 'WINNER';
 type MobileMode = 'compact' | 'table';
 
 const PAGE_SIZE = 25;
+const isGameweekRevealed = (status?: string | null) => String(status ?? '').toUpperCase() !== 'UPCOMING';
+const isResolvedOutcome = (outcome?: string | null) => {
+  const normalized = String(outcome ?? '').toUpperCase();
+  return normalized !== '' && normalized !== 'PENDING';
+};
 
 function cellStyle(outcome?: string) {
   const normalized = String(outcome ?? '').toUpperCase();
@@ -63,7 +69,7 @@ export default function SurvivorTableScreen() {
     },
   });
 
-  const { data, isLoading, isRefetching, refetch, error } = useQuery({
+  const survivorQuery = useQuery({
     queryKey: ['survivor-table', compId],
     queryFn: async () => (await api.get<SurvivorTableResponse>(`/competitions/${compId}/survivor-table`)).data,
     enabled: Number.isFinite(compId),
@@ -78,6 +84,11 @@ export default function SurvivorTableScreen() {
     return <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}><Text style={styles.error}>Invalid competition id.</Text></SafeAreaView>;
   }
 
+  const data = survivorQuery.data;
+  const isLoading = survivorQuery.isLoading;
+  const isRefetching = survivorQuery.isRefetching;
+  const error = survivorQuery.error;
+  const survivorLastUpdatedAt = Math.max(compQuery.dataUpdatedAt || 0, survivorQuery.dataUpdatedAt || 0);
   const rows = data?.rows ?? [];
   const gameweeks = data?.gameweeks ?? [];
 
@@ -145,7 +156,9 @@ export default function SurvivorTableScreen() {
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.brand} />}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 24 }} refreshControl={<RefreshControl refreshing={isRefetching || compQuery.isRefetching} onRefresh={() => { void survivorQuery.refetch(); void compQuery.refetch(); }} tintColor={colors.brand} />}>
+        <DataFreshnessBar label="Survivor table" updatedAt={survivorLastUpdatedAt || null} refreshing={isRefetching || compQuery.isRefetching} onRefresh={() => { void survivorQuery.refetch(); void compQuery.refetch(); }} />
+
         <View style={styles.hero}>
           <TouchableOpacity onPress={() => router.push(`/competitions/${compId}`)}><Text style={styles.backLink}>← Competition</Text></TouchableOpacity>
           <ScreenTitle>Survivor Table</ScreenTitle>
@@ -222,10 +235,14 @@ export default function SurvivorTableScreen() {
             renderItem={({ item }) => {
               const rowKey = `${item.userId}-${item.entryNumber ?? 1}`;
               const isOpen = expandedRows.has(rowKey);
-              const latestPick = [...gameweeks]
+              const latestVisiblePick = [...gameweeks]
                 .reverse()
                 .map((gw) => ({ gw, pick: item.picks[gw.weekNumber] }))
-                .find((entry) => entry.pick != null);
+                .find((entry) => isGameweekRevealed(entry.gw.status) && entry.pick != null);
+              const latestResolvedPick = [...gameweeks]
+                .reverse()
+                .map((gw) => ({ gw, pick: item.picks[gw.weekNumber] }))
+                .find((entry) => isGameweekRevealed(entry.gw.status) && entry.pick != null && isResolvedOutcome(entry.pick.outcome));
 
               return (
                 <View style={styles.compactCard}>
@@ -235,7 +252,7 @@ export default function SurvivorTableScreen() {
                       <Text style={styles.compactMeta}>
                         {item.status}
                         {item.status === 'ELIMINATED' && item.eliminatedWeek ? ` · GW${item.eliminatedWeek}` : ''}
-                        {latestPick?.pick ? ` · ${latestPick.pick.teamShortName}` : ''}
+                        {latestVisiblePick?.pick ? ` · ${latestVisiblePick.pick.teamShortName}` : ''}
                       </Text>
                     </View>
                     <Text style={styles.compactChevron}>{isOpen ? '▲' : '▼'}</Text>
@@ -246,7 +263,7 @@ export default function SurvivorTableScreen() {
                       {compQuery.data?.lifelineEnabled ? (
                         <Text style={styles.compactLine}>Lifeline: <Text style={{ color: item.lifelineUsed ? '#fcd34d' : '#86efac' }}>{item.lifelineUsed ? `Used${item.lifelineUsedWeek ? ` · GW${item.lifelineUsedWeek}` : ''}` : 'Available'}</Text></Text>
                       ) : null}
-                      <Text style={styles.compactLine}>Last resolved pick: <Text style={{ color: '#e2e8f0' }}>{latestPick?.pick ? `${latestPick.pick.teamShortName} (${latestPick.pick.outcome})` : '—'}</Text></Text>
+                      <Text style={styles.compactLine}>Last resolved pick: <Text style={{ color: '#e2e8f0' }}>{latestResolvedPick?.pick ? `${latestResolvedPick.pick.teamShortName} (${latestResolvedPick.pick.outcome})` : '—'}</Text></Text>
                     </View>
                   ) : null}
                 </View>

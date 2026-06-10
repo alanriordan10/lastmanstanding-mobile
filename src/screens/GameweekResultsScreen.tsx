@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
 import type { Competition, Fixture, GameweekSelection, GameweekSelectionsData } from '../types';
 import { Card, MetaText, ScreenTitle, SectionTitle, StatusPill } from '../components/ui';
+import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
 
 type PickStat = {
@@ -60,7 +61,7 @@ export default function GameweekResultsScreen() {
   });
   const liveResultsRefetchInterval = compQuery.data?.status === 'ACTIVE' ? 120000 : false;
 
-  const { data, isLoading, error, isRefetching, refetch } = useQuery({
+  const selectionsQuery = useQuery({
     queryKey: ['gameweek-results', compId, gameweekId],
     queryFn: async () => {
       const res = await api.get(`/competitions/${compId}/gameweeks/${gameweekId}/selections`);
@@ -84,6 +85,18 @@ export default function GameweekResultsScreen() {
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
     refetchInterval: liveResultsRefetchInterval,
   });
+
+  const data = selectionsQuery.data;
+  const isLoading = selectionsQuery.isLoading;
+  const error = selectionsQuery.error;
+  const resultsLastUpdatedAt = Math.max(compQuery.dataUpdatedAt || 0, selectionsQuery.dataUpdatedAt || 0, fixturesQuery.dataUpdatedAt || 0, pickStatsQuery.dataUpdatedAt || 0);
+  const resultsRefreshing = selectionsQuery.isRefetching || compQuery.isRefetching || fixturesQuery.isRefetching || pickStatsQuery.isRefetching;
+  const refreshResults = () => {
+    void selectionsQuery.refetch();
+    void compQuery.refetch();
+    void fixturesQuery.refetch();
+    void pickStatsQuery.refetch();
+  };
 
   useEffect(() => {
     setExpandedCompactRows(new Set());
@@ -203,7 +216,9 @@ export default function GameweekResultsScreen() {
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
-      <ScrollView refreshControl={<RefreshControl refreshing={isRefetching || pickStatsQuery.isRefetching || fixturesQuery.isRefetching} onRefresh={() => void Promise.all([refetch(), pickStatsQuery.refetch(), fixturesQuery.refetch()])} tintColor={colors.brand} />}>
+      <ScrollView refreshControl={<RefreshControl refreshing={resultsRefreshing} onRefresh={refreshResults} tintColor={colors.brand} />}>
+        <DataFreshnessBar label="Gameweek results" updatedAt={resultsLastUpdatedAt || null} refreshing={resultsRefreshing} onRefresh={refreshResults} />
+
         <View style={styles.hero}>
           <MetaText>{comp?.name ?? 'Competition'}</MetaText>
           <ScreenTitle>Gameweek {weekNumber} Results</ScreenTitle>

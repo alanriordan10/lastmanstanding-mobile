@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickResponse } from '../types';
 import { useEffect, useMemo, useState } from 'react';
 import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
+import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
 
 type PaymentConfigResponse = {
@@ -35,6 +36,9 @@ type PickConfidence = {
   score: number;
   source: 'odds' | 'crowd' | 'fallback';
   lowConfidence: boolean;
+  marketChance?: number | null;
+  pickShare?: number | null;
+  explanation: string;
 };
 
 function clamp01(value: number): number {
@@ -75,9 +79,26 @@ function calculatePickConfidence(fixture: Fixture, side: 'home' | 'away', pickSt
   if (combinedRisk == null) return null;
 
   const score = Math.round(combinedRisk);
+  const marketChance = Number.isFinite(p) ? Math.round(p * 100) : null;
+  const pickShare = pickStat?.percentage ?? null;
   // Football win probabilities are usually tightly grouped, so use thresholds that create useful pick guidance.
   const label: ConfidenceLabel = score <= 45 ? 'Safe' : score <= 62 ? 'Balanced' : 'Bold';
-  return { label, score, source: hasOdds ? 'odds' : 'crowd', lowConfidence: !hasOdds };
+  const explanation = buildConfidenceExplanation(label, hasOdds, marketChance, pickShare);
+  return { label, score, source: hasOdds ? 'odds' : 'crowd', lowConfidence: !hasOdds, marketChance, pickShare, explanation };
+}
+
+function buildConfidenceExplanation(label: ConfidenceLabel, hasOdds: boolean, marketChance?: number | null, pickShare?: number | null): string {
+  const marketText = marketChance != null ? `Market gives this pick about ${marketChance}% to win.` : null;
+  const crowdText = pickShare != null ? `${pickShare}% of players are on this team.` : null;
+  const labelText = label === 'Safe'
+    ? 'Safer profile: market strength is doing most of the work.'
+    : label === 'Balanced'
+      ? 'Balanced profile: playable, but not a free pass.'
+      : 'Bold profile: higher upside if the crowd avoids it, but more knockout risk.';
+  if (marketText && crowdText) return `${labelText} ${marketText} ${crowdText}`;
+  if (marketText) return `${labelText} ${marketText}`;
+  if (crowdText) return `${labelText} No live odds yet, so this uses pick share. ${crowdText}`;
+  return hasOdds ? labelText : 'Limited data: waiting for odds or crowd data.';
 }
 
 function confidenceHelpText(confidence?: PickConfidence | null): string {
@@ -243,9 +264,14 @@ export default function CompetitionDetailScreen() {
   const joinMutation = useMutation({
     mutationFn: async () => api.post(`/competitions/${id}/join`),
     onSuccess: async () => {
-      await myEntriesQuery.refetch();
-      await competitionQuery.refetch();
-      await myStatusQuery.refetch();
+      await Promise.all([
+        myEntriesQuery.refetch(),
+        competitionQuery.refetch(),
+        myStatusQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
+        queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['survivor-table', id] }),
+      ]);
     },
   });
 
@@ -289,8 +315,13 @@ export default function CompetitionDetailScreen() {
       }
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-status', selectedEntryId] });
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'my-pick'] });
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'pick-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['competition', id, 'selections'] });
       queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] });
       queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] });
+      queryClient.invalidateQueries({ queryKey: ['survivor-table', id] });
+      queryClient.invalidateQueries({ queryKey: ['gameweek-results', id, variables.gwId] });
+      queryClient.invalidateQueries({ queryKey: ['gameweek-results-pick-stats', id, variables.gwId] });
     },
     onError: (_error, _vars, context) => {
       setOptimisticPick(null);
@@ -1263,6 +1294,7 @@ export default function CompetitionDetailScreen() {
         myStatusQuery.refetch(),
         queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
         queryClient.invalidateQueries({ queryKey: ['competitions-upcoming'] }),
+        queryClient.invalidateQueries({ queryKey: ['survivor-table', id] }),
       ]);
     } catch (error: any) {
       const message = error?.response?.data?.message
@@ -1289,6 +1321,15 @@ export default function CompetitionDetailScreen() {
   const clubPrimaryColor = brandedCompetition?.clubPrimaryColor ?? colors.brand;
   const clubSecondaryColor = brandedCompetition?.clubSecondaryColor ?? clubPrimaryColor;
   const actionBanner = actionSummary;
+  const detailLastUpdatedAt = Math.max(
+    competitionQuery.dataUpdatedAt || 0,
+    fixturesQuery.dataUpdatedAt || 0,
+    myStatusQuery.dataUpdatedAt || 0,
+    myEntriesQuery.dataUpdatedAt || 0,
+    pickStatsQuery.dataUpdatedAt || 0,
+    selectionsQuery.dataUpdatedAt || 0,
+  );
+  const detailRefreshing = refreshing || competitionQuery.isRefetching || fixturesQuery.isRefetching || myStatusQuery.isRefetching || myEntriesQuery.isRefetching || pickStatsQuery.isRefetching || selectionsQuery.isRefetching;
   // Keep provisional pulse text off-screen until the latest narrative week has the stats
   // and selections that drive the wording. Other queries can still fill in later.
   const detailFirstLoad = competitionQuery.isLoading
@@ -1299,6 +1340,8 @@ export default function CompetitionDetailScreen() {
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={clubPrimaryColor} />}>
+        <DataFreshnessBar label="Competition data" updatedAt={detailLastUpdatedAt || null} refreshing={detailRefreshing} onRefresh={() => void onRefresh()} />
+
         <View style={[styles.heroWeb, { borderTopColor: clubPrimaryColor, backgroundColor: '#0f172a' }]}>
           {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.clubLogoMobile} /> : null}
           <TouchableOpacity onPress={() => router.push('/competitions')} style={styles.lobbyLink}>
@@ -1624,11 +1667,17 @@ export default function CompetitionDetailScreen() {
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
                       const homeConfidence = calculatePickConfidence(f, 'home', homePickStat, gw.gameweekStatus);
                       const awayConfidence = calculatePickConfidence(f, 'away', awayPickStat, gw.gameweekStatus);
+                      const pickedConfidence = homeIsMyPick ? homeConfidence : awayIsMyPick ? awayConfidence : null;
+                      const pickedStat = homeIsMyPick ? homePickStat : awayIsMyPick ? awayPickStat : null;
+                      const pickedTeamName = homeIsMyPick ? f.homeTeamName : awayIsMyPick ? f.awayTeamName : null;
                       return (
-                        <View key={f.id} style={styles.webFixtureRow}>
-                          <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} confidence={homeConfidence} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
-                          <FixtureCenter fixture={f} />
-                          <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} confidence={awayConfidence} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
+                        <View key={f.id} style={styles.fixtureCardWithInsight}>
+                          <View style={styles.webFixtureRow}>
+                            <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} confidence={homeConfidence} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
+                            <FixtureCenter fixture={f} />
+                            <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} confidence={awayConfidence} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
+                          </View>
+                          {pickedConfidence && pickedTeamName ? <PickInsightPanel teamName={pickedTeamName} confidence={pickedConfidence} pickStat={pickedStat} /> : null}
                         </View>
                       );
                     })}
@@ -1844,6 +1893,37 @@ function TeamPickSide({ align, name, shortName, picked, used, pickStat, confiden
         </View>
       ) : null}
     </TouchableOpacity>
+  );
+}
+
+function PickInsightPanel({ teamName, confidence, pickStat }: { teamName: string; confidence: PickConfidence; pickStat?: PickStat | null }) {
+  return (
+    <View style={styles.pickInsightPanel}>
+      <View style={styles.pickInsightHeader}>
+        <Text style={styles.pickInsightKicker}>Why this pick?</Text>
+        <ConfidenceBadge confidence={confidence} picked showDetail />
+      </View>
+      <Text style={styles.pickInsightTitle} numberOfLines={1}>{teamName}</Text>
+      <Text style={styles.pickInsightText}>{confidence.explanation}</Text>
+      <View style={styles.pickInsightMetrics}>
+        {confidence.marketChance != null ? (
+          <View style={styles.pickInsightMetric}>
+            <Text style={styles.pickInsightMetricValue}>{confidence.marketChance}%</Text>
+            <Text style={styles.pickInsightMetricLabel}>market win</Text>
+          </View>
+        ) : null}
+        {pickStat ? (
+          <View style={styles.pickInsightMetric}>
+            <Text style={styles.pickInsightMetricValue}>{pickStat.percentage ?? 0}%</Text>
+            <Text style={styles.pickInsightMetricLabel}>{pickStat.pickCount} picked</Text>
+          </View>
+        ) : null}
+        <View style={styles.pickInsightMetric}>
+          <Text style={styles.pickInsightMetricValue}>{confidence.score}</Text>
+          <Text style={styles.pickInsightMetricLabel}>risk score</Text>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -2177,7 +2257,17 @@ const styles = StyleSheet.create({
   lifelineBoxHelp: { color: '#bae6fd', opacity: 0.85, fontSize: 11, lineHeight: 15, marginTop: 3 },
   eliminatedBox: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422', borderRadius: 10, padding: 10 },
   eliminatedBoxText: { color: '#fca5a5', fontSize: 12, fontWeight: '800' },
+  fixtureCardWithInsight: { gap: 0 },
   webFixtureRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: '#1f293780', paddingHorizontal: 10, paddingVertical: 8 },
+  pickInsightPanel: { marginTop: -2, marginHorizontal: 4, borderBottomLeftRadius: 14, borderBottomRightRadius: 14, borderWidth: 1, borderTopWidth: 0, borderColor: '#38bdf833', backgroundColor: '#082f4955', paddingHorizontal: 12, paddingTop: 10, paddingBottom: 11 },
+  pickInsightHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  pickInsightKicker: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', letterSpacing: 1.5, textTransform: 'uppercase' },
+  pickInsightTitle: { color: '#f8fafc', fontSize: 13, fontWeight: '900', marginTop: 7 },
+  pickInsightText: { color: '#cbd5e1', fontSize: 11, lineHeight: 16, marginTop: 4 },
+  pickInsightMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 9 },
+  pickInsightMetric: { borderRadius: 999, backgroundColor: '#ffffff12', paddingHorizontal: 9, paddingVertical: 5 },
+  pickInsightMetricValue: { color: '#ffffff', fontSize: 11, fontWeight: '900' },
+  pickInsightMetricLabel: { color: '#94a3b8', fontSize: 8, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
   routePanel: { gap: 10, borderWidth: 1, borderColor: '#334155', backgroundColor: '#0b1220', borderRadius: 16, padding: 12 },
   routeCurrentCard: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91a', borderRadius: 14, padding: 12 },
   routeEyebrow: { color: '#7dd3fc', fontSize: 10, fontWeight: '900', letterSpacing: 1.8, textTransform: 'uppercase' },
