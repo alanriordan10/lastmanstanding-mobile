@@ -21,7 +21,7 @@ type ConfirmDialogState = {
   message: string;
   items?: string[];
   confirmText: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<unknown>;
 } | null;
 
 type UserSearchResult = { id: number; username: string; email: string; role: string };
@@ -127,6 +127,7 @@ export default function ClubAdminScreen() {
   const [showCompetitionModal, setShowCompetitionModal] = useState(false);
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [showAssignAdmin, setShowAssignAdmin] = useState(false);
   const [adminSearchQuery, setAdminSearchQuery] = useState('');
   const [showBrandingForm, setShowBrandingForm] = useState(false);
@@ -480,10 +481,18 @@ export default function ClubAdminScreen() {
     }
   };
 
-  const runConfirmedAction = () => {
+  const runConfirmedAction = async () => {
     const action = confirmDialog?.onConfirm;
-    setConfirmDialog(null);
-    action?.();
+    if (!action || confirmBusy) return;
+    setConfirmBusy(true);
+    try {
+      await action();
+    } catch {
+      // Mutation handlers surface the user-facing error.
+    } finally {
+      setConfirmDialog(null);
+      setConfirmBusy(false);
+    }
   };
 
   const exportPaymentsCsv = async () => {
@@ -685,6 +694,7 @@ export default function ClubAdminScreen() {
           {filteredCompetitions.map((c) => {
             const active = c.id === selectedCompetitionId;
             const managing = c.id === managingCompetitionId;
+            const deletingThisCompetition = deleteCompetitionMutation.isPending && deleteCompetitionMutation.variables === c.id;
             return (
               <View key={c.id} style={styles.compBlock}>
                 <View style={[styles.webCompetitionCard, active ? styles.webCompetitionCardActive : null]}>
@@ -723,8 +733,8 @@ export default function ClubAdminScreen() {
                     setExpandedParticipantIds(new Set());
                     setShowAddPanel(false);
                   }}><Text style={styles.dropdownBtnText}>{managing ? 'Participants ▲' : 'Participants ▼'}</Text></TouchableOpacity>
-                    <TouchableOpacity style={[styles.webActionBtn, styles.deleteCompBtn]} onPress={() => setConfirmDialog({ title: `Delete ${c.name}?`, message: 'This will permanently delete this competition and related competition data.', items: ['Participants, picks, payments, and gameweek data may be removed.', 'This action cannot be undone.'], confirmText: 'Delete Competition', onConfirm: () => deleteCompetitionMutation.mutate(c.id) })} disabled={deleteCompetitionMutation.isPending}>
-                      <Text style={styles.deleteCompBtnText}>{deleteCompetitionMutation.isPending ? 'Deleting...' : 'Delete'}</Text>
+                    <TouchableOpacity style={[styles.webActionBtn, styles.deleteCompBtn, deletingThisCompetition ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Delete ${c.name}?`, message: 'This will permanently delete this competition and related competition data.', items: ['Participants, picks, payments, and gameweek data may be removed.', 'This action cannot be undone.'], confirmText: 'Delete Competition', onConfirm: () => deleteCompetitionMutation.mutateAsync(c.id) })} disabled={deletingThisCompetition}>
+                      <Text style={styles.deleteCompBtnText}>{deletingThisCompetition ? 'Deleting...' : 'Delete'}</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -738,17 +748,20 @@ export default function ClubAdminScreen() {
                             {userSearch.trim().length > 0 && userSearch.trim().length < 2 ? <MetaText>Type at least 2 characters to search.</MetaText> : null}
                             {userSearchQuery.isLoading ? <MetaText>Searching users...</MetaText> : null}
                             {userSearch.trim().length >= 2 && !userSearchQuery.isLoading && (userSearchQuery.data ?? []).length === 0 ? <MetaText>No users found.</MetaText> : null}
-                            {(userSearchQuery.data ?? []).slice(0, 8).map((u) => (
+                            {(userSearchQuery.data ?? []).slice(0, 8).map((u) => {
+                              const addingThisUser = addParticipantMutation.isPending && addParticipantMutation.variables?.userId === u.id;
+                              return (
                               <View key={u.id} style={styles.userResultRow}>
                                 <View style={{ flex: 1 }}>
                                   <Text style={styles.userResultName}>{u.username}</Text>
                                   <Text style={styles.userResultEmail}>{u.email}</Text>
                                 </View>
-                                <TouchableOpacity style={styles.payBtn} onPress={() => addParticipantMutation.mutate({ userId: u.id })}>
-                                  <Text style={styles.payBtnText}>Add</Text>
+                                <TouchableOpacity style={[styles.payBtn, addingThisUser ? styles.actionBtnDisabled : null]} onPress={() => addParticipantMutation.mutate({ userId: u.id })} disabled={addingThisUser}>
+                                  <Text style={styles.payBtnText}>{addingThisUser ? 'Adding...' : 'Add'}</Text>
                                 </TouchableOpacity>
                               </View>
-                            ))}
+                              );
+                            })}
 
                             <Text style={styles.addGuestTitle}>Or add guest</Text>
                             <TextInput value={guestUsername} onChangeText={setGuestUsername} placeholder="Guest username" placeholderTextColor={colors.textMuted} style={styles.input} />
@@ -814,6 +827,8 @@ export default function ClubAdminScreen() {
                       const paid = paidSet.has(p.id);
                       const canManualPay = c.paymentMode === 'MANUAL';
                       const paymentUpdating = (markPaidMutation.isPending && markPaidMutation.variables === p.id) || (unmarkPaidMutation.isPending && unmarkPaidMutation.variables === p.id);
+                      const declaringThisParticipant = declareWinnerMutation.isPending && declareWinnerMutation.variables === p.id;
+                      const removingThisParticipant = removeParticipantMutation.isPending && removeParticipantMutation.variables === p.id;
                       const canDeclareWinner = p.status === 'ACTIVE' && c.status !== 'COMPLETED' && activeParticipantCount > 1;
                       const isExpanded = expandedParticipantIds.has(p.id);
                       return (
@@ -845,7 +860,7 @@ export default function ClubAdminScreen() {
                             <View style={styles.expandedPanel}>
                               <View style={styles.actionRowWrap}>
                                 {canManualPay ? (paid ? (
-                                  <TouchableOpacity style={[styles.warnBtn, paymentUpdating ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Revert payment for ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)}?`, message: 'This will move this entry back to awaiting payment.', items: ['The player may lose paid status for this competition entry.', 'Use this only when payment was marked incorrectly or refunded.'], confirmText: 'Revert Payment', onConfirm: () => unmarkPaidMutation.mutate(p.id) })} disabled={paymentUpdating}>
+                                  <TouchableOpacity style={[styles.warnBtn, paymentUpdating ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Revert payment for ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)}?`, message: 'This will move this entry back to awaiting payment.', items: ['The player may lose paid status for this competition entry.', 'Use this only when payment was marked incorrectly or refunded.'], confirmText: 'Revert Payment', onConfirm: () => unmarkPaidMutation.mutateAsync(p.id) })} disabled={paymentUpdating}>
                                     <Text style={styles.warnBtnText}>{paymentUpdating ? 'Saving...' : 'Revert'}</Text>
                                   </TouchableOpacity>
                                 ) : (
@@ -853,8 +868,8 @@ export default function ClubAdminScreen() {
                                     <Text style={styles.payBtnText}>{paymentUpdating ? 'Saving...' : 'Mark paid'}</Text>
                                   </TouchableOpacity>
                                 )) : null}
-                                {canDeclareWinner ? <TouchableOpacity style={styles.winBtn} onPress={() => setConfirmDialog({ title: `Declare ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)} as winner?`, message: 'This will mark this entry as the competition winner.', items: ['Use this only when the competition is ready to be closed.', 'Other active entries may be affected by the winner workflow.'], confirmText: 'Declare Winner', onConfirm: () => declareWinnerMutation.mutate(p.id) })}><Text style={styles.winBtnText}>Declare winner</Text></TouchableOpacity> : null}
-                                <TouchableOpacity style={styles.removeBtn} onPress={() => setConfirmDialog({ title: `Remove ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)}?`, message: 'This removes this entry from the competition.', items: ['Payment and pick history for this entry may be affected.', 'This action cannot be undone.'], confirmText: 'Remove Participant', onConfirm: () => removeParticipantMutation.mutate(p.id) })}><Text style={styles.removeBtnText}>Remove participant</Text></TouchableOpacity>
+                                {canDeclareWinner ? <TouchableOpacity style={[styles.winBtn, declaringThisParticipant ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Declare ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)} as winner?`, message: 'This will mark this entry as the competition winner.', items: ['Use this only when the competition is ready to be closed.', 'Other active entries may be affected by the winner workflow.'], confirmText: 'Declare Winner', onConfirm: () => declareWinnerMutation.mutateAsync(p.id) })} disabled={declaringThisParticipant}><Text style={styles.winBtnText}>{declaringThisParticipant ? 'Declaring...' : 'Declare winner'}</Text></TouchableOpacity> : null}
+                                <TouchableOpacity style={[styles.removeBtn, removingThisParticipant ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Remove ${participantLabel(p, (entryCountByUserId.get(p.userId) ?? 0) > 1)}?`, message: 'This removes this entry from the competition.', items: ['Payment and pick history for this entry may be affected.', 'This action cannot be undone.'], confirmText: 'Remove Participant', onConfirm: () => removeParticipantMutation.mutateAsync(p.id) })} disabled={removingThisParticipant}><Text style={styles.removeBtnText}>{removingThisParticipant ? 'Removing...' : 'Remove participant'}</Text></TouchableOpacity>
                               </View>
                             </View>
                           ) : null}
@@ -892,11 +907,11 @@ export default function ClubAdminScreen() {
                 </View>
               ))}
               <View style={styles.confirmActions}>
-                <TouchableOpacity style={styles.confirmCancelButton} onPress={() => setConfirmDialog(null)}>
+                <TouchableOpacity style={[styles.confirmCancelButton, confirmBusy ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog(null)} disabled={confirmBusy}>
                   <Text style={styles.confirmCancelText}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.confirmDeleteButton} onPress={runConfirmedAction}>
-                  <Text style={styles.confirmDeleteText}>{confirmDialog?.confirmText ?? 'Confirm'}</Text>
+                <TouchableOpacity style={[styles.confirmDeleteButton, confirmBusy ? styles.actionBtnDisabled : null]} onPress={runConfirmedAction} disabled={confirmBusy}>
+                  <Text style={styles.confirmDeleteText}>{confirmBusy ? 'Working...' : confirmDialog?.confirmText ?? 'Confirm'}</Text>
                 </TouchableOpacity>
               </View>
             </View>

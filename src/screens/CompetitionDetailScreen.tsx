@@ -1,10 +1,12 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import * as Sharing from 'expo-sharing';
+import ViewShot from 'react-native-view-shot';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
 import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickResponse } from '../types';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
 import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
@@ -217,6 +219,8 @@ export default function CompetitionDetailScreen() {
   const [paymentActionSuccess, setPaymentActionSuccess] = useState<string | null>(null);
   const [paymentInProgress, setPaymentInProgress] = useState(false);
   const [gameweekDisplayMode, setGameweekDisplayMode] = useState<GameweekDisplayMode>('cards');
+  const [recapSharing, setRecapSharing] = useState(false);
+  const recapCardRef = useRef<React.ElementRef<typeof ViewShot>>(null);
 
   const competitionQuery = useQuery({
     queryKey: ['competition', id],
@@ -500,6 +504,17 @@ export default function CompetitionDetailScreen() {
 
     return ordered;
   }, [fixtures]);
+
+  const openPickGameweeks = useMemo(
+    () => gameweeks.filter((gw) => gw.gameweekStatus === 'UPCOMING' && !isPastDate(gw.lockAt)),
+    [gameweeks],
+  );
+  const missingPickGameweeks = useMemo(
+    () => openPickGameweeks.filter((gw) => !myPickByGameweek.has(gw.gameweekId)),
+    [openPickGameweeks, myPickByGameweek],
+  );
+  const hasMissingOpenPick = missingPickGameweeks.length > 0;
+  const nextMissingPickWeek = missingPickGameweeks[0] ?? null;
 
   const lockedGameweeks = useMemo(
     () => gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt)),
@@ -1176,7 +1191,8 @@ export default function CompetitionDetailScreen() {
     if (awaitingOnlinePayment) return { title: 'Complete online payment', detail: 'Your entry is waiting for Stripe payment confirmation. Picks are disabled until payment completes.', tone: 'warn' as const };
     if (awaitingPayment && strictManualPayment) return { title: 'Awaiting payment confirmation', detail: 'Picks are disabled until club admin marks this entry as paid.', tone: 'warn' as const };
     if (canAddAnotherEntry && onlinePaymentRequired) return { title: 'Add another paid entry', detail: `Pay €${competition?.entryFee ?? 0} online to add another entry.`, tone: 'brand' as const };
-    if (canPick) return { title: 'Pick required', detail: 'Your entry is active and ready for this gameweek pick.', tone: 'brand' as const };
+    if (canPick && hasMissingOpenPick) return { title: nextMissingPickWeek ? `Pick required for Gameweek ${nextMissingPickWeek.weekNumber}` : 'Pick required', detail: nextMissingPickWeek?.lockAt ? `Your entry is active. Make this pick before lock ${distanceToNow(nextMissingPickWeek.lockAt)}.` : 'Your entry is active and has an open gameweek pick still to make.', tone: 'brand' as const };
+    if (canPick && openPickGameweeks.length > 0) return { title: 'Picks submitted', detail: openPickGameweeks.length === 1 ? 'Your pick is in for the open gameweek. Track fixtures and survivor movement below.' : `Your picks are in for all ${openPickGameweeks.length} open gameweeks. Track fixtures and survivor movement below.`, tone: 'success' as const };
     return { title: 'Monitoring competition state', detail: 'Review gameweek status and fixture progress below.', tone: 'neutral' as const };
   })();
 
@@ -1188,6 +1204,54 @@ export default function CompetitionDetailScreen() {
     try {
       await Share.share({ message: inviteText });
     } catch {}
+  };
+
+  const buildGameweekRecapMessage = () => {
+    if (!competition) return '';
+    const weekLabel = narrativeWeekLabel ?? (currentGameweek?.weekNumber ? `Gameweek ${currentGameweek.weekNumber}` : 'Competition');
+    const mostPicked = mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet';
+    const weeklySurvival = weeklySurvivalRate != null ? `${weeklySurvivalRate}%` : `${survivalRate}%`;
+    const message = [
+      `${competition.name} - ${weekLabel} Recap`,
+      '',
+      pulseTitle,
+      pulseBody,
+      '',
+      `This week: ${weeklyEliminatedCount} out, ${weeklyAdvancedCount} advanced`,
+      `Still alive: ${effectiveActiveCount}/${participantCount}`,
+      `Survival rate: ${weeklySurvival}`,
+      `Most picked: ${mostPicked}`,
+      competition?.winnerUsername ? `Winner: ${competition.winnerUsername}` : null,
+      '',
+      'Shared from Last Man Standing',
+    ].filter(Boolean).join('\n');
+
+    return message;
+  };
+
+  const onShareGameweekRecap = async () => {
+    if (!competition || detailFirstLoad || recapSharing) return;
+    const message = buildGameweekRecapMessage();
+    setRecapSharing(true);
+    try {
+      const uri = await recapCardRef.current?.capture?.();
+      const canShareFile = uri ? await Sharing.isAvailableAsync() : false;
+      if (uri && canShareFile) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'image/png',
+          dialogTitle: `${competition.name} recap`,
+          UTI: 'public.png',
+        });
+        return;
+      }
+      await Share.share({ title: `${competition.name} recap`, message });
+    } catch {
+      try {
+        await Share.share({ title: `${competition.name} recap`, message });
+      } catch {}
+    } finally {
+      setRecapSharing(false);
+    }
   };
 
   const openOnlinePayment = async () => {
@@ -1443,45 +1507,33 @@ export default function CompetitionDetailScreen() {
           </View>
         ) : null}
 
-        <View style={styles.changedPanel}>
-          {detailFirstLoad ? (
-            <CompetitionSnapshotSkeleton />
-          ) : (
-            <>
-              <Text style={[styles.sectionEyebrow, { color: clubPrimaryColor }]}>What Changed This Gameweek</Text>
-              <Text style={styles.changedTitle}>{narrativeWeekLabel ?? 'Latest gameweek'} snapshot</Text>
-              <View style={styles.snapshotTilesWeb}>
-                <SnapshotTile label="New eliminations" value={String(weeklyEliminatedCount)} tone="danger" />
-                <SnapshotTile label="Most picked" value={mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet'} />
-                <SnapshotTile label="Lifelines played" value={competition?.lifelineEnabled ? String(lifelinesPlayedThisWeek) : 'Lifeline off'} tone="warn" />
-                <SnapshotTile label="Entries remaining" value={String(effectiveActiveCount)} tone="success" />
+        {!detailFirstLoad ? (
+          <View style={styles.recapShareOuter}>
+            <ViewShot ref={recapCardRef} options={{ format: 'png', quality: 0.96, result: 'tmpfile' }}>
+              <View style={[styles.recapShareCard, { borderColor: `${clubPrimaryColor}55`, backgroundColor: `${clubSecondaryColor}12` }]}>
+                <View style={styles.recapShareHeader}>
+                  <View style={styles.recapShareTitleBlock}>
+                    <Text style={[styles.recapShareEyebrow, { color: clubPrimaryColor }]}>Shareable recap</Text>
+                    <Text style={styles.recapShareTitle}>{latestNarrativeWeek?.weekNumber || currentGameweek?.weekNumber ? `Gameweek ${latestNarrativeWeek?.weekNumber ?? currentGameweek?.weekNumber} recap` : 'Competition recap'}</Text>
+                  </View>
+                  {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.recapShareLogo} /> : null}
+                </View>
+                <Text style={styles.recapShareHeadline}>{pulseTitle}</Text>
+                <Text style={styles.recapShareCopy}>{pulseBody}</Text>
+                <View style={styles.recapStatGrid}>
+                  <View style={styles.recapStatBox}><Text style={styles.recapStatValue}>{weeklyEliminatedCount}</Text><Text style={styles.recapStatLabel}>Out this week</Text></View>
+                  <View style={styles.recapStatBox}><Text style={styles.recapStatValue}>{effectiveActiveCount}</Text><Text style={styles.recapStatLabel}>Still alive</Text></View>
+                  <View style={styles.recapStatBox}><Text style={styles.recapStatValue}>{weeklySurvivalRate != null ? `${weeklySurvivalRate}%` : `${survivalRate}%`}</Text><Text style={styles.recapStatLabel}>Survival</Text></View>
+                  <View style={styles.recapStatBox}><Text style={styles.recapStatValue}>{mostBackedTeam?.teamShortName ?? '—'}</Text><Text style={styles.recapStatLabel}>Most picked</Text></View>
+                </View>
+                <Text style={styles.recapShareFooter}>Last Man Standing</Text>
               </View>
-            </>
-          )}
-        </View>
-
-        <View style={[styles.stateBanner, actionBanner.tone === 'warn' ? styles.stateBannerWarn : actionBanner.tone === 'danger' ? styles.stateBannerDanger : actionBanner.tone === 'success' ? styles.stateBannerSuccess : styles.stateBannerBrand]}>
-          <Text style={styles.stateEyebrow}>{!joined && competition?.status === 'UPCOMING' ? 'Next Step' : actionBanner.tone === 'danger' ? 'Status' : 'Next Action'}</Text>
-          <Text style={styles.stateTitle}>{actionBanner.title}</Text>
-          <Text style={styles.stateCopy}>{actionBanner.detail}</Text>
-          {canJoinCompetition || canAddAnotherEntry || awaitingOnlinePayment ? (
-            <PrimaryButton
-              label={paymentInProgress || joinMutation.isPending
-                ? 'Working...'
-                : onlinePaymentRequired
-                ? joined
-                  ? `Pay €${competition?.entryFee ?? 0} online`
-                  : `Pay €${competition?.entryFee ?? 0} & join`
-                : joined
-                ? 'Add another entry'
-                : 'Join competition'}
-              onPress={handleEntryAction}
-              disabled={paymentInProgress || joinMutation.isPending}
-            />
-          ) : null}
-          {paymentActionError ? <Text style={styles.paymentActionError}>{paymentActionError}</Text> : null}
-          {paymentActionSuccess ? <Text style={styles.paymentActionSuccess}>{paymentActionSuccess}</Text> : null}
-        </View>
+            </ViewShot>
+            <TouchableOpacity style={[styles.recapShareButton, recapSharing ? styles.recapShareButtonDisabled : null, { borderColor: `${clubPrimaryColor}66`, backgroundColor: `${clubPrimaryColor}24` }]} onPress={() => void onShareGameweekRecap()} disabled={recapSharing}>
+              <Text style={[styles.recapShareButtonText, { color: clubPrimaryColor }]}>{recapSharing ? 'Preparing image...' : 'Share Gameweek Recap'}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {joined && (myEntriesQuery.data?.length ?? 0) > 1 ? (
           <Card>
@@ -1506,6 +1558,20 @@ export default function CompetitionDetailScreen() {
           meta={currentGameweek?.lockAt ? `Next lock: ${distanceToNow(currentGameweek.lockAt)}` : null}
           tone={actionSummary.tone}
           onOpenSurvivor={() => router.push(`/competitions/${id}/survivor-table`)}
+          actionLabel={paymentInProgress || joinMutation.isPending
+            ? 'Working...'
+            : onlinePaymentRequired
+            ? joined
+              ? `Pay €${competition?.entryFee ?? 0} online`
+              : `Pay €${competition?.entryFee ?? 0} & join`
+            : joined
+            ? 'Add another entry'
+            : 'Join competition'}
+          showAction={canJoinCompetition || canAddAnotherEntry || awaitingOnlinePayment}
+          actionDisabled={paymentInProgress || joinMutation.isPending}
+          onAction={handleEntryAction}
+          actionError={paymentActionError}
+          actionSuccess={paymentActionSuccess}
         />
 
         <TouchableOpacity style={[styles.mobileToggle, mobileRulesOpen ? styles.mobileToggleOpen : null]} onPress={() => setMobileRulesOpen((v) => !v)}>
@@ -1736,6 +1802,12 @@ function StatusActionsPanel({
   meta,
   tone,
   onOpenSurvivor,
+  showAction,
+  actionLabel,
+  actionDisabled,
+  onAction,
+  actionError,
+  actionSuccess,
 }: {
   title: string;
   statusLabel: string;
@@ -1743,6 +1815,12 @@ function StatusActionsPanel({
   meta?: string | null;
   tone: 'neutral' | 'brand' | 'success' | 'danger' | 'warn';
   onOpenSurvivor: () => void;
+  showAction?: boolean;
+  actionLabel?: string;
+  actionDisabled?: boolean;
+  onAction?: () => void;
+  actionError?: string | null;
+  actionSuccess?: string | null;
 }) {
   return (
     <View style={styles.statusActionsCard}>
@@ -1756,6 +1834,11 @@ function StatusActionsPanel({
       </View>
       <Text style={styles.statusActionsBody}>{body}</Text>
       {meta ? <Text style={styles.statusActionsMeta}>{meta}</Text> : null}
+      {showAction && onAction ? (
+        <PrimaryButton label={actionLabel ?? 'Continue'} onPress={onAction} disabled={actionDisabled} />
+      ) : null}
+      {actionError ? <Text style={styles.paymentActionError}>{actionError}</Text> : null}
+      {actionSuccess ? <Text style={styles.paymentActionSuccess}>{actionSuccess}</Text> : null}
       <TouchableOpacity onPress={onOpenSurvivor} style={styles.statusSecondaryButton}>
         <Text style={styles.statusSecondaryButtonText}>Open survivor table</Text>
       </TouchableOpacity>
@@ -2152,6 +2235,24 @@ const styles = StyleSheet.create({
   textWarn: { color: '#fcd34d' },
   textSuccess: { color: '#86efac' },
   textBrand: { color: '#38bdf8' },
+
+  recapShareOuter: { gap: 10 },
+  recapShareCard: { borderWidth: 1, borderRadius: 24, padding: 15, gap: 12, backgroundColor: '#0f172a' },
+  recapShareHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  recapShareTitleBlock: { flex: 1, minWidth: 0 },
+  recapShareEyebrow: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.5 },
+  recapShareTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '900', marginTop: 4 },
+  recapShareLogo: { width: 38, height: 38, borderRadius: 12, borderWidth: 1, borderColor: '#ffffff33' },
+  recapShareHeadline: { color: '#ffffff', fontSize: 21, lineHeight: 27, fontWeight: '900', letterSpacing: -0.2 },
+  recapShareCopy: { color: '#cbd5e1', fontSize: 13, lineHeight: 20 },
+  recapStatGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  recapStatBox: { flexGrow: 1, flexBasis: '47%', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#02061766', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 10 },
+  recapStatValue: { color: '#ffffff', fontSize: 20, fontWeight: '900' },
+  recapStatLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1, marginTop: 4 },
+  recapShareFooter: { color: '#64748b', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4, textAlign: 'right' },
+  recapShareButton: { borderWidth: 1, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
+  recapShareButtonDisabled: { opacity: 0.6 },
+  recapShareButtonText: { fontSize: 13, fontWeight: '900' },
 
   stateBanner: { borderWidth: 1, borderRadius: 22, padding: 15 },
   stateBannerBrand: { borderColor: '#0ea5e955', backgroundColor: '#0ea5e918' },

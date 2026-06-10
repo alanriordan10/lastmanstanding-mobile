@@ -49,7 +49,7 @@ type ConfirmDialogState = {
   message: string;
   items?: string[];
   confirmText: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<unknown>;
 } | null;
 
 function getApiMessage(err: any, fallback: string) {
@@ -204,6 +204,7 @@ export default function AdminScreen() {
   const [auditPage, setAuditPage] = useState(0);
   const [auditDensity, setAuditDensity] = useState<'comfortable' | 'compact'>('comfortable');
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const isAdmin = user?.role === 'ADMIN';
 
@@ -277,10 +278,18 @@ export default function AdminScreen() {
     enabled: isAdmin && tab === 'audit',
   });
 
-  const runConfirmedAction = () => {
+  const runConfirmedAction = async () => {
     const action = confirmDialog?.onConfirm;
-    setConfirmDialog(null);
-    action?.();
+    if (!action || confirmBusy) return;
+    setConfirmBusy(true);
+    try {
+      await action();
+    } catch {
+      // Mutation handlers surface the user-facing error.
+    } finally {
+      setConfirmDialog(null);
+      setConfirmBusy(false);
+    }
   };
 
   const refreshAll = async () => {
@@ -937,7 +946,7 @@ export default function AdminScreen() {
             <View style={styles.tabWrap}>
               <FilterPill label="Upcoming only" active={bulkDeleteUpcomingOnly} onPress={() => setBulkDeleteUpcomingOnly((v) => !v)} />
             </View>
-            <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Delete matching competitions?', message: `This will permanently delete competitions matching "${(bulkDeletePrefix || '').trim() || 'the selected prefix'}"${bulkDeleteUpcomingOnly ? ' that are still upcoming' : ''}.`, items: ['Competition data, participants, picks, and payments can be affected.', 'This action cannot be undone.'], confirmText: 'Yes, Delete All', onConfirm: () => bulkDeleteCompetitions.mutate() })}><Text style={styles.delBtnText}>{bulkDeleteCompetitions.isPending ? 'Deleting...' : 'Bulk Delete'}</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Delete matching competitions?', message: `This will permanently delete competitions matching "${(bulkDeletePrefix || '').trim() || 'the selected prefix'}"${bulkDeleteUpcomingOnly ? ' that are still upcoming' : ''}.`, items: ['Competition data, participants, picks, and payments can be affected.', 'This action cannot be undone.'], confirmText: 'Yes, Delete All', onConfirm: () => bulkDeleteCompetitions.mutateAsync() })}><Text style={styles.delBtnText}>{bulkDeleteCompetitions.isPending ? 'Deleting...' : 'Bulk Delete'}</Text></TouchableOpacity>
 
             <View style={styles.hr} />
             <SectionTitle>List</SectionTitle>
@@ -968,7 +977,7 @@ export default function AdminScreen() {
                       <TouchableOpacity style={styles.adminEditBtn} onPress={() => openEditCompetitionModal(c)}><Text style={styles.adminEditBtnText}>Edit</Text></TouchableOpacity>
                       <TouchableOpacity style={styles.adminSyncBtn} onPress={() => syncCompetitionFixtures.mutate(c.id)} disabled={syncCompetitionFixtures.isPending && syncCompetitionFixtures.variables === c.id}><Text style={styles.adminSyncBtnText}>{syncCompetitionFixtures.isPending && syncCompetitionFixtures.variables === c.id ? '⏳' : '🔄 Sync'}</Text></TouchableOpacity>
                       <TouchableOpacity style={styles.adminManageBtn} onPress={() => setManagingAdminCompetitionId((prev) => prev === c.id ? null : c.id)}><Text style={styles.adminManageBtnText}>{managing ? 'Hide' : 'Manage'}</Text></TouchableOpacity>
-                      <TouchableOpacity style={styles.adminDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete ${c.name}?`, message: 'This will permanently delete this competition and its related competition data.', items: ['Participants, picks, payments, and gameweek data may be removed.', 'This action cannot be undone.'], confirmText: 'Delete Competition', onConfirm: () => deleteCompetition.mutate(c.id) })} disabled={deleteCompetition.isPending && deleteCompetition.variables === c.id}><Text style={styles.adminDeleteBtnText}>{deleteCompetition.isPending && deleteCompetition.variables === c.id ? 'Deleting...' : 'Delete'}</Text></TouchableOpacity>
+                      <TouchableOpacity style={styles.adminDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete ${c.name}?`, message: 'This will permanently delete this competition and its related competition data.', items: ['Participants, picks, payments, and gameweek data may be removed.', 'This action cannot be undone.'], confirmText: 'Delete Competition', onConfirm: () => deleteCompetition.mutateAsync(c.id) })} disabled={deleteCompetition.isPending && deleteCompetition.variables === c.id}><Text style={styles.adminDeleteBtnText}>{deleteCompetition.isPending && deleteCompetition.variables === c.id ? 'Deleting...' : 'Delete'}</Text></TouchableOpacity>
                     </View>
                   </View>
                   {managing ? <AdminParticipantsPanel competition={c} setConfirmDialog={setConfirmDialog} /> : null}
@@ -1022,7 +1031,7 @@ export default function AdminScreen() {
                       <TouchableOpacity style={styles.clubGhostBtn} onPress={() => { setAssigningClub(club); setAssignUserId(String(club.clubAdminId ?? '')); setAssignAdminSearch(club.clubAdminUsername ?? ''); }}>
                         <Text style={styles.clubGhostBtnText}>{club.clubAdminUsername ? 'Change Admin' : 'Assign Admin'}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity style={styles.clubDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete "${club.name}"?`, message: 'The club will be removed. Its competitions will not be deleted.', items: ['Club ownership/admin assignment will be removed.', 'This action cannot be undone.'], confirmText: 'Yes, Delete Club', onConfirm: () => deleteClub.mutate(club.id) })} disabled={deleteClub.isPending && deleteClub.variables === club.id}>
+                      <TouchableOpacity style={styles.clubDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete "${club.name}"?`, message: 'The club will be removed. Its competitions will not be deleted.', items: ['Club ownership/admin assignment will be removed.', 'This action cannot be undone.'], confirmText: 'Yes, Delete Club', onConfirm: () => deleteClub.mutateAsync(club.id) })} disabled={deleteClub.isPending && deleteClub.variables === club.id}>
                         <Text style={styles.clubDeleteBtnText}>{deleteClub.isPending && deleteClub.variables === club.id ? 'Deleting...' : 'Delete'}</Text>
                       </TouchableOpacity>
                     </View>
@@ -1086,7 +1095,7 @@ export default function AdminScreen() {
                       <TouchableOpacity style={[styles.userActionBtn, u.disabled ? styles.userEnableBtn : styles.userDisableBtn]} onPress={() => toggleUserDisabled.mutate(u.id)} disabled={toggleUserDisabled.isPending}>
                         <Text style={[styles.userActionText, u.disabled ? styles.userEnableText : styles.userDisableText]}>{u.disabled ? 'Enable' : 'Disable'}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity style={styles.clubDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete "${u.username}"?`, message: 'This will permanently remove the user account and all their competition data.', items: ['Club ownership and participant entries may be affected.', 'This action cannot be undone.'], confirmText: 'Yes, Delete User', onConfirm: () => deleteUser.mutate(u.id) })} disabled={deleteUser.isPending && deleteUser.variables === u.id}>
+                      <TouchableOpacity style={styles.clubDeleteBtn} onPress={() => setConfirmDialog({ title: `Delete "${u.username}"?`, message: 'This will permanently remove the user account and all their competition data.', items: ['Club ownership and participant entries may be affected.', 'This action cannot be undone.'], confirmText: 'Yes, Delete User', onConfirm: () => deleteUser.mutateAsync(u.id) })} disabled={deleteUser.isPending && deleteUser.variables === u.id}>
                         <Text style={styles.clubDeleteBtnText}>{deleteUser.isPending && deleteUser.variables === u.id ? 'Deleting...' : 'Delete'}</Text>
                       </TouchableOpacity>
                     </View>
@@ -1107,7 +1116,7 @@ export default function AdminScreen() {
             <SectionTitle>Fixture Sync</SectionTitle>
             <PrimaryButton label={syncAllFixtures.isPending ? 'Syncing...' : 'Sync Fixtures'} onPress={() => syncAllFixtures.mutate()} disabled={syncAllFixtures.isPending} />
             <View style={{ height: 10 }} />
-            <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Clear fixture cache?', message: 'This clears cached fixture provider responses.', items: ['Fresh fixture data will be fetched on the next sync or load.'], confirmText: 'Clear Cache', onConfirm: () => clearFixtureCache.mutate() })}><Text style={styles.delBtnText}>{clearFixtureCache.isPending ? 'Clearing...' : 'Clear Fixture Cache'}</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Clear fixture cache?', message: 'This clears cached fixture provider responses.', items: ['Fresh fixture data will be fetched on the next sync or load.'], confirmText: 'Clear Cache', onConfirm: () => clearFixtureCache.mutateAsync() })}><Text style={styles.delBtnText}>{clearFixtureCache.isPending ? 'Clearing...' : 'Clear Fixture Cache'}</Text></TouchableOpacity>
           </View>
         )}
 
@@ -1308,7 +1317,7 @@ export default function AdminScreen() {
               <View style={styles.testDataWarningCard}>
                 <Text style={styles.testDataWarningText}>Warning: this permanently deletes all users with usernames starting with testuser and all their competition data.</Text>
               </View>
-              <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Delete All Test Users?', message: 'All users with usernames starting with testuser and all their data will be permanently removed.', items: ['All testuser accounts deleted', 'All their picks and results deleted', 'All their competition participations removed'], confirmText: 'Yes, Delete All', onConfirm: () => cleanupTestData.mutate() })} disabled={cleanupTestData.isPending}>
+              <TouchableOpacity style={styles.delBtnWide} onPress={() => setConfirmDialog({ title: 'Delete All Test Users?', message: 'All users with usernames starting with testuser and all their data will be permanently removed.', items: ['All testuser accounts deleted', 'All their picks and results deleted', 'All their competition participations removed'], confirmText: 'Yes, Delete All', onConfirm: () => cleanupTestData.mutateAsync() })} disabled={cleanupTestData.isPending}>
                 <Text style={styles.delBtnText}>{cleanupTestData.isPending ? 'Cleaning up...' : 'Delete All Test Users'}</Text>
               </TouchableOpacity>
             </View>
@@ -1457,11 +1466,11 @@ export default function AdminScreen() {
               </View>
             ))}
             <View style={styles.confirmActions}>
-              <TouchableOpacity style={styles.confirmCancelButton} onPress={() => setConfirmDialog(null)}>
+              <TouchableOpacity style={[styles.confirmCancelButton, confirmBusy ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog(null)} disabled={confirmBusy}>
                 <Text style={styles.confirmCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.confirmDeleteButton} onPress={runConfirmedAction}>
-                <Text style={styles.confirmDeleteText}>{confirmDialog?.confirmText ?? 'Confirm'}</Text>
+              <TouchableOpacity style={[styles.confirmDeleteButton, confirmBusy ? styles.actionBtnDisabled : null]} onPress={runConfirmedAction} disabled={confirmBusy}>
+                <Text style={styles.confirmDeleteText}>{confirmBusy ? 'Working...' : confirmDialog?.confirmText ?? 'Confirm'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1967,9 +1976,9 @@ function AdminParticipantsPanel({
                     message: `This will end "${competition.name}" and crown this participant as the champion.`,
                     items: [`${label} will be marked as WINNER`, 'All other active participants will be eliminated', 'The competition will be marked as COMPLETED'],
                     confirmText: 'Yes, Declare Winner',
-                    onConfirm: () => declareWinner.mutate(participant.id),
+                    onConfirm: () => declareWinner.mutateAsync(participant.id),
                   })}
-                  disabled={declareWinner.isPending}
+                  disabled={declaringThis}
                 >
                   <Text style={styles.adminWinnerBtnText}>{declaringThis ? 'Declaring...' : 'Winner'}</Text>
                 </TouchableOpacity>
@@ -1980,9 +1989,9 @@ function AdminParticipantsPanel({
                   title: `Remove ${label}?`,
                   message: `This will remove them from "${competition.name}" and delete all their picks and results.`,
                   confirmText: 'Yes, Remove',
-                  onConfirm: () => removeParticipant.mutate(participant.id),
+                  onConfirm: () => removeParticipant.mutateAsync(participant.id),
                 })}
-                disabled={removeParticipant.isPending}
+                disabled={removingThis}
               >
                 <Text style={styles.adminRemoveBtnText}>{removingThis ? 'Removing...' : 'Remove'}</Text>
               </TouchableOpacity>
@@ -2218,6 +2227,7 @@ const styles = StyleSheet.create({
   confirmBullet: { color: '#fca5a5', fontSize: 13, fontWeight: '900' },
   confirmItemText: { color: '#94a3b8', flex: 1, fontSize: 12, lineHeight: 17 },
   confirmActions: { flexDirection: 'row', gap: 8, marginTop: 16 },
+  actionBtnDisabled: { opacity: 0.55 },
   confirmCancelButton: { flex: 1, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
   confirmCancelText: { color: '#cbd5e1', fontWeight: '900', fontSize: 12 },
   confirmDeleteButton: { flex: 1.3, borderWidth: 1, borderColor: '#ef444466', backgroundColor: '#ef444426', borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
