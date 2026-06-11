@@ -1,12 +1,12 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { AppState, Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import ViewShot from 'react-native-view-shot';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
 import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickResponse } from '../types';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
 import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
@@ -253,7 +253,7 @@ export default function CompetitionDetailScreen() {
 
   const joined = (myEntriesQuery.data?.length ?? 0) > 0;
   const activeCompetition = competitionQuery.data?.status === 'ACTIVE';
-  const liveDetailRefetchInterval = activeCompetition ? 120000 : false;
+  const liveDetailRefetchInterval = activeCompetition ? 30000 : false;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
   const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
   const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
@@ -394,7 +394,7 @@ export default function CompetitionDetailScreen() {
 
   const refreshing = competitionQuery.isRefetching || currentGameweekQuery.isRefetching || fixturesQuery.isRefetching || myPickQuery.isRefetching || myEntriesQuery.isRefetching || myStatusQuery.isRefetching || pickStatsQuery.isRefetching || selectionsQuery.isRefetching;
 
-  const onRefresh = async () => {
+  const refreshCompetitionDetail = useCallback(async () => {
     await Promise.all([
       competitionQuery.refetch(),
       myEntriesQuery.refetch(),
@@ -407,7 +407,38 @@ export default function CompetitionDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'pick-stats'] }),
       queryClient.invalidateQueries({ queryKey: ['competition', id, 'selections'] }),
     ]);
+  }, [
+    competitionQuery.refetch,
+    currentGameweekQuery.refetch,
+    fixturesQuery.refetch,
+    id,
+    myEntriesQuery.refetch,
+    myPickQuery.refetch,
+    myStatusQuery.refetch,
+    pickStatsQuery.refetch,
+    queryClient,
+    selectionsQuery.refetch,
+  ]);
+
+  const onRefresh = async () => {
+    await refreshCompetitionDetail();
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!Number.isFinite(id)) return;
+      void refreshCompetitionDetail();
+    }, [id, refreshCompetitionDetail]),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && Number.isFinite(id)) {
+        void refreshCompetitionDetail();
+      }
+    });
+    return () => subscription.remove();
+  }, [id, refreshCompetitionDetail]);
 
   if (!Number.isFinite(id)) {
     return <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}><Text style={styles.error}>Invalid competition id.</Text></SafeAreaView>;
