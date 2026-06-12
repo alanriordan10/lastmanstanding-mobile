@@ -253,7 +253,9 @@ export default function CompetitionDetailScreen() {
 
   const joined = (myEntriesQuery.data?.length ?? 0) > 0;
   const activeCompetition = competitionQuery.data?.status === 'ACTIVE';
-  const liveDetailRefetchInterval = activeCompetition ? 30000 : false;
+  const activeDetailRefetchInterval = activeCompetition ? 120000 : false;
+  const cachedCurrentGameweek = queryClient.getQueryData<GameweekResponse>(['competition', id, 'current-gameweek']);
+  const liveDetailRefetchInterval = cachedCurrentGameweek?.status === 'IN_PROGRESS' ? 60000 : false;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
   const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
   const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
@@ -339,7 +341,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'current-gameweek'],
     queryFn: async () => (await api.get<GameweekResponse>(`/competitions/${id}/gameweeks/current`)).data,
     enabled: Number.isFinite(id),
-    refetchInterval: liveDetailRefetchInterval,
+    refetchInterval: activeDetailRefetchInterval,
   });
 
   const fixturesQuery = useQuery({
@@ -546,6 +548,8 @@ export default function CompetitionDetailScreen() {
   );
   const hasMissingOpenPick = missingPickGameweeks.length > 0;
   const nextMissingPickWeek = missingPickGameweeks[0] ?? null;
+  const nextFutureLockWeek = openPickGameweeks[0] ?? null;
+  const nextFutureLockLabel = nextFutureLockWeek?.lockAt ? `Next lock: ${distanceToNow(nextFutureLockWeek.lockAt)}` : null;
 
   const lockedGameweeks = useMemo(
     () => gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt)),
@@ -637,7 +641,7 @@ export default function CompetitionDetailScreen() {
   const latestNarrativeSelectionsLoading = latestSelectionsIndex >= 0
     && (latestSelectionsQuery?.data === undefined || Boolean(latestSelectionsQuery?.isFetching));
 
-  const latestNarrativeStats = latestNarrativeWeek
+  const latestNarrativeStatsAll = latestNarrativeWeek
     ? [...(pickStatsByGameweek.get(latestNarrativeWeek.gameweekId)?.values() ?? [])]
         .filter((stat, index, arr) => stat.teamId != null && latestNarrativeTeamIds.has(stat.teamId) && arr.findIndex((other) => other.teamId === stat.teamId) === index)
         .sort((a, b) => b.pickCount - a.pickCount)
@@ -646,7 +650,6 @@ export default function CompetitionDetailScreen() {
   const latestSelectionsData = latestNarrativeWeek ? selectionsByGameweek.get(latestNarrativeWeek.gameweekId) : undefined;
   const latestSelections = latestSelectionsData?.selections ?? [];
   const resolvedSelections = latestSelections.filter((selection) => String(selection.outcome ?? '').toUpperCase() !== 'PENDING');
-  const mostBackedTeam = latestNarrativeStats[0] ?? null;
   const narrativeTeamResults = useMemo(() => {
     const results = new Map<number, 'WIN' | 'LOSS' | 'DRAW' | 'POSTPONED'>();
     if (!latestNarrativeWeek) return results;
@@ -670,6 +673,11 @@ export default function CompetitionDetailScreen() {
     });
     return results;
   }, [latestNarrativeWeek]);
+  const narrativeWeekInProgress = latestNarrativeWeek?.gameweekStatus === 'IN_PROGRESS';
+  const latestNarrativeStats = narrativeWeekInProgress
+    ? latestNarrativeStatsAll.filter((stat) => stat.teamId != null && narrativeTeamResults.has(stat.teamId))
+    : latestNarrativeStatsAll;
+  const mostBackedTeam = latestNarrativeStats[0] ?? null;
   const losingPickedTeam = latestNarrativeStats.find((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS') ?? null;
   const contrarianSurvivor = [...latestNarrativeStats].reverse().find((stat) => {
     if (stat.teamId == null || stat.pickCount <= 0) return false;
@@ -697,7 +705,6 @@ export default function CompetitionDetailScreen() {
   const totalResolvedPicks = latestNarrativeStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
   const survivingResolvedPicks = survivingPickedTeams.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
   const computedWeeklySurvivalRate = totalResolvedPicks > 0 ? Math.round((survivingResolvedPicks / totalResolvedPicks) * 100) : null;
-  const narrativeWeekInProgress = latestNarrativeWeek?.gameweekStatus === 'IN_PROGRESS';
   const weeklySurvivalRate = narrativeWeekInProgress
     ? (gwSurvivalFromSelections ?? computedWeeklySurvivalRate)
     : (gwSurvivalFromBackend ?? gwSurvivalFromSelections ?? computedWeeklySurvivalRate);
@@ -708,7 +715,7 @@ export default function CompetitionDetailScreen() {
     ? (gwAdvancedCount || survivingResolvedPicks || 0)
     : (gwAdvancedThisWeek ?? (gwAdvancedCount || survivingResolvedPicks || 0));
   const weeklyEliminatedCount = narrativeWeekInProgress
-    ? (gwEliminatedFromSelections || (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0))
+    ? gwEliminatedFromSelections
     : (gwEliminatedThisWeek ?? (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0));
   const biggestCasualty = weeklyEliminatedCount > 0 ? losingPickedTeam : null;
   const doomedPickedTeams = weeklyEliminatedCount > 0 ? losingPickedTeams : [];
@@ -1237,13 +1244,22 @@ export default function CompetitionDetailScreen() {
     } catch {}
   };
 
+  const shareMode = latestNarrativeWeek?.gameweekStatus === 'COMPLETED'
+    ? 'recap'
+    : latestNarrativeWeek?.gameweekStatus === 'IN_PROGRESS' && latestNarrativeWeek.fixtures.some((fixture) => fixture.status === 'FINISHED' || fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED')
+      ? 'live'
+      : null;
+  const shareTitle = shareMode === 'live' ? 'Live Update' : 'Recap';
+  const shareButtonLabel = shareMode === 'live' ? 'Share Live Update' : 'Share Gameweek Recap';
+  const shareEyebrow = shareMode === 'live' ? 'Shareable live update' : 'Shareable recap';
+
   const buildGameweekRecapMessage = () => {
     if (!competition) return '';
     const weekLabel = narrativeWeekLabel ?? (currentGameweek?.weekNumber ? `Gameweek ${currentGameweek.weekNumber}` : 'Competition');
     const mostPicked = mostBackedTeam ? `${mostBackedTeam.teamShortName} (${mostBackedTeam.pickCount})` : 'No picks yet';
     const weeklySurvival = weeklySurvivalRate != null ? `${weeklySurvivalRate}%` : `${survivalRate}%`;
     const message = [
-      `${competition.name} - ${weekLabel} Recap`,
+      `${competition.name} - ${weekLabel} ${shareTitle}`,
       '',
       pulseTitle,
       pulseBody,
@@ -1261,7 +1277,7 @@ export default function CompetitionDetailScreen() {
   };
 
   const onShareGameweekRecap = async () => {
-    if (!competition || detailFirstLoad || recapSharing) return;
+    if (!competition || !shareMode || detailFirstLoad || recapSharing) return;
     const message = buildGameweekRecapMessage();
     setRecapSharing(true);
     try {
@@ -1270,15 +1286,15 @@ export default function CompetitionDetailScreen() {
       if (uri && canShareFile) {
         await Sharing.shareAsync(uri, {
           mimeType: 'image/png',
-          dialogTitle: `${competition.name} recap`,
+          dialogTitle: `${competition.name} ${shareTitle.toLowerCase()}`,
           UTI: 'public.png',
         });
         return;
       }
-      await Share.share({ title: `${competition.name} recap`, message });
+      await Share.share({ title: `${competition.name} ${shareTitle.toLowerCase()}`, message });
     } catch {
       try {
-        await Share.share({ title: `${competition.name} recap`, message });
+        await Share.share({ title: `${competition.name} ${shareTitle.toLowerCase()}`, message });
       } catch {}
     } finally {
       setRecapSharing(false);
@@ -1461,7 +1477,7 @@ export default function CompetitionDetailScreen() {
 
           <View style={styles.heroMetaChips}>
             <Text style={styles.heroMetaChip}>{actionSummary.title}</Text>
-            {currentGameweek?.lockAt ? <Text style={styles.heroMetaChip}>Next lock: {distanceToNow(currentGameweek.lockAt)}</Text> : null}
+            {nextFutureLockLabel ? <Text style={styles.heroMetaChip}>{nextFutureLockLabel}</Text> : null}
             <Text style={[styles.heroMetaChip, competition?.lifelineEnabled ? styles.lifelineChipOn : null]}>{lifelineStatusLabel}</Text>
           </View>
 
@@ -1538,14 +1554,14 @@ export default function CompetitionDetailScreen() {
           </View>
         ) : null}
 
-        {!detailFirstLoad ? (
+        {!detailFirstLoad && shareMode ? (
           <View style={styles.recapShareOuter}>
             <ViewShot ref={recapCardRef} options={{ format: 'png', quality: 0.96, result: 'tmpfile' }}>
               <View style={[styles.recapShareCard, { borderColor: `${clubPrimaryColor}55`, backgroundColor: `${clubSecondaryColor}12` }]}>
                 <View style={styles.recapShareHeader}>
                   <View style={styles.recapShareTitleBlock}>
-                    <Text style={[styles.recapShareEyebrow, { color: clubPrimaryColor }]}>Shareable recap</Text>
-                    <Text style={styles.recapShareTitle}>{latestNarrativeWeek?.weekNumber || currentGameweek?.weekNumber ? `Gameweek ${latestNarrativeWeek?.weekNumber ?? currentGameweek?.weekNumber} recap` : 'Competition recap'}</Text>
+                    <Text style={[styles.recapShareEyebrow, { color: clubPrimaryColor }]}>{shareEyebrow}</Text>
+                    <Text style={styles.recapShareTitle}>{latestNarrativeWeek?.weekNumber || currentGameweek?.weekNumber ? `Gameweek ${latestNarrativeWeek?.weekNumber ?? currentGameweek?.weekNumber} ${shareTitle.toLowerCase()}` : `Competition ${shareTitle.toLowerCase()}`}</Text>
                   </View>
                   {clubLogoUrl ? <Image source={{ uri: clubLogoUrl }} style={styles.recapShareLogo} /> : null}
                 </View>
@@ -1561,7 +1577,7 @@ export default function CompetitionDetailScreen() {
               </View>
             </ViewShot>
             <TouchableOpacity style={[styles.recapShareButton, recapSharing ? styles.recapShareButtonDisabled : null, { borderColor: `${clubPrimaryColor}66`, backgroundColor: `${clubPrimaryColor}24` }]} onPress={() => void onShareGameweekRecap()} disabled={recapSharing}>
-              <Text style={[styles.recapShareButtonText, { color: clubPrimaryColor }]}>{recapSharing ? 'Preparing image...' : 'Share Gameweek Recap'}</Text>
+              <Text style={[styles.recapShareButtonText, { color: clubPrimaryColor }]}>{recapSharing ? 'Preparing image...' : shareButtonLabel}</Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -1586,7 +1602,7 @@ export default function CompetitionDetailScreen() {
           title={actionSummary.title}
           statusLabel={actionSummary.title}
           body={actionSummary.detail}
-          meta={currentGameweek?.lockAt ? `Next lock: ${distanceToNow(currentGameweek.lockAt)}` : null}
+          meta={nextFutureLockLabel}
           tone={actionSummary.tone}
           onOpenSurvivor={() => router.push(`/competitions/${id}/survivor-table`)}
           actionLabel={paymentInProgress || joinMutation.isPending
