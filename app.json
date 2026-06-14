@@ -2,7 +2,7 @@
   "expo": {
     "name": "Last Man Standing",
     "slug": "lastmanstanding-mobile",
-    "version": "1.0.16",
+    "version": "1.0.17",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -26,7 +26,7 @@
       "permissions": [
         "POST_NOTIFICATIONS"
       ],
-      "versionCode": 16,
+      "versionCode": 17,
       "playStoreUrl": "",
       "blockedPermissions": [],
       "intentFilters": [
@@ -68,12 +68,12 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "3e3a5137-9e9b-4612-b40c-5ce8d3a06b02"
+        "projectId": "fb4efbe0-86a0-4dc0-b633-47ace1135338"
       }
     },
     "description": "Run and play Last Man Standing football survivor competitions.",
     "privacy": "public",
-    "owner": "alanriordan",
+    "owner": "riordanalan",
     "primaryColor": "#0ea5e9",
     "githubUrl": "https://github.com/alan/lastmanstanding-mobile"
   }

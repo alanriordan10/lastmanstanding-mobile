@@ -202,6 +202,11 @@ function pickOutcomeTextStyle(outcome?: string) {
   return styles.pickOutcomePending;
 }
 
+function isResolvedPickOutcome(outcome?: string | null) {
+  const normalized = String(outcome ?? '').toUpperCase();
+  return Boolean(normalized && normalized !== 'PENDING');
+}
+
 export default function CompetitionDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -609,11 +614,39 @@ export default function CompetitionDetailScreen() {
   const selectionsByGameweek = useMemo(() => {
     const byGameweek = new Map<number, GameweekSelectionsData>();
     resolvedGameweeks.forEach((gw, index) => {
-      const data = selectionResults[index]?.data as GameweekSelectionsData | undefined;
-      if (data) byGameweek.set(gw.gameweekId, data);
+      const data = selectionResults[index]?.data as GameweekSelectionsData | GameweekSelectionsData['selections'] | undefined;
+      if (Array.isArray(data)) {
+        byGameweek.set(gw.gameweekId, { selections: data, byeGranted: false, weekNumber: gw.weekNumber });
+      } else if (data && Array.isArray(data.selections)) {
+        byGameweek.set(gw.gameweekId, data);
+      }
     });
     return byGameweek;
   }, [resolvedGameweeks, selectionResults]);
+
+  const liveOutcomeByGameweek = useMemo(() => {
+    const outcomes = new Map<number, string>();
+    const participantId = selectedEntryId ?? participant?.id ?? null;
+    for (const [gameweekId, data] of selectionsByGameweek.entries()) {
+      const savedPick = myPickByGameweek.get(gameweekId);
+      if (!savedPick) continue;
+      const selections = Array.isArray(data.selections) ? data.selections : [];
+      const selection = selections.find((item) => {
+        const sameParticipant = participantId != null && item.participantId === participantId;
+        const sameEntryNumber = participantId == null && selectedEntryNumber != null && item.entryNumber === selectedEntryNumber;
+        return (sameParticipant || sameEntryNumber) && item.teamId === savedPick.teamId;
+      });
+      const liveOutcome = selection?.outcome?.toUpperCase();
+      if (liveOutcome && liveOutcome !== 'PENDING') outcomes.set(gameweekId, liveOutcome);
+    }
+    return outcomes;
+  }, [myPickByGameweek, participant?.id, selectedEntryId, selectedEntryNumber, selectionsByGameweek]);
+
+  const displayPickHistory = useMemo(() => pickHistory.map((pick) => {
+    const liveOutcome = liveOutcomeByGameweek.get(pick.gameweekId);
+    if (!liveOutcome || isResolvedPickOutcome(pick.outcome)) return pick;
+    return { ...pick, outcome: liveOutcome };
+  }), [liveOutcomeByGameweek, pickHistory]);
 
   const latestNarrativeWeek = useMemo(() => {
     return [...gameweeks]
@@ -1677,10 +1710,14 @@ export default function CompetitionDetailScreen() {
             const isLocked = gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt);
             const isCompleted = gw.gameweekStatus === 'COMPLETED' || gw.fixtures.every((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED');
             const savedPickForGw = myPickByGameweek.get(gw.gameweekId);
+            const liveOutcomeForGw = savedPickForGw ? liveOutcomeByGameweek.get(gw.gameweekId) : undefined;
+            const displaySavedPickForGw = savedPickForGw && liveOutcomeForGw && !isResolvedPickOutcome(savedPickForGw.outcome)
+              ? { ...savedPickForGw, outcome: liveOutcomeForGw }
+              : savedPickForGw;
             const optimisticPickForGw = optimisticPick?.gwId === gw.gameweekId
               ? { teamId: optimisticPick.teamId, teamName: optimisticPick.teamName, teamShortName: optimisticPick.teamShortName, locked: false, useLifeline: optimisticPick.useLifeline, outcome: 'PENDING' }
               : null;
-            const myPickForGw = optimisticPickForGw ?? savedPickForGw;
+            const myPickForGw = optimisticPickForGw ?? displaySavedPickForGw;
             const lifelineChecked = pendingLifelineGameweekId === gw.gameweekId;
             const lifelineSelectedElsewhere = Boolean(pendingLifelineGameweekId && pendingLifelineGameweekId !== gw.gameweekId);
             const lifelineDisabled = isEliminated || isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
@@ -1813,7 +1850,7 @@ export default function CompetitionDetailScreen() {
             </TouchableOpacity>
             {!historyCollapsed ? (
               <View style={styles.webPickHistoryList}>
-                {[...pickHistory].sort((a, b) => a.weekNumber - b.weekNumber).map((pick) => (
+                {[...displayPickHistory].sort((a, b) => a.weekNumber - b.weekNumber).map((pick) => (
                   <View key={pick.pickId} style={styles.webPickHistoryItem}>
                     <View style={styles.webPickHistoryTopRow}>
                       <View style={styles.webPickHistoryTeamBlock}>
