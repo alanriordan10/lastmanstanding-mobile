@@ -3,7 +3,7 @@ import { Image, Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpaci
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Path } from 'react-native-svg';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { API_BASE_URL, getApiErrorMessage } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { authenticateWithBiometrics, getBiometricAvailability, hasStoredTokensForBiometricLogin, isBiometricLoginEnabled } from '../auth/biometricAuth';
@@ -22,6 +22,10 @@ function GoogleMark() {
 export default function LoginScreen() {
   const { login, refreshMe } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams<{ returnTo?: string }>();
+  const returnTo = Array.isArray(params.returnTo) ? params.returnTo[0] : params.returnTo;
+  const decodedReturnTo = returnTo ? decodeURIComponent(returnTo) : undefined;
+  const hideClubCta = decodedReturnTo === '/create-club';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -53,7 +57,7 @@ export default function LoginScreen() {
       const ok = await authenticateWithBiometrics('Sign in');
       if (!ok) return;
       await refreshMe();
-      router.replace('/competitions');
+      router.replace(returnTo ? decodeURIComponent(returnTo) : '/competitions');
     } catch (e: any) {
       setError(getApiErrorMessage(e, 'Biometric sign in failed. Use email and password.'));
     } finally {
@@ -66,7 +70,7 @@ export default function LoginScreen() {
     setError(null);
     try {
       await login(email.trim(), password);
-      router.replace('/competitions');
+      router.replace(returnTo ? decodeURIComponent(returnTo) : '/competitions');
     } catch (e: any) {
       setError(getApiErrorMessage(e, 'Login failed'));
     } finally {
@@ -77,8 +81,9 @@ export default function LoginScreen() {
   const onGoogleLogin = async () => {
     setError(null);
     const baseUrl = API_BASE_URL.replace(/\/+$|\s+$/g, '');
+    const query = returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : '';
     try {
-      await Linking.openURL(`${baseUrl}/oauth2/mobile/google`);
+      await Linking.openURL(`${baseUrl}/oauth2/mobile/google${query}`);
     } catch {
       setError('Could not open Google sign in.');
     }
@@ -147,15 +152,17 @@ export default function LoginScreen() {
           <TouchableOpacity onPress={() => router.push('/signup')}><Text style={styles.signupLink}>Sign up</Text></TouchableOpacity>
         </View>
 
-        <View style={styles.clubCtaCard}>
-          <View style={styles.clubCtaPill}><Text style={styles.clubCtaPillText}>Running a club?</Text></View>
-          <Text style={styles.clubCtaTitle}>Create a club account</Text>
-          <Text style={styles.clubCtaText}>Set up your club, create competitions, invite members, and manage payments from one admin area.</Text>
-          <TouchableOpacity onPress={() => router.push('/register-club')} style={styles.clubCtaButton}>
-            <Text style={styles.clubCtaButtonText}>Start a club</Text>
-            <Ionicons name="arrow-forward" size={17} color="#e0f2fe" />
-          </TouchableOpacity>
-        </View>
+        {!hideClubCta ? (
+          <View style={styles.clubCtaCard}>
+            <View style={styles.clubCtaPill}><Text style={styles.clubCtaPillText}>Running a club?</Text></View>
+            <Text style={styles.clubCtaTitle}>Create your club</Text>
+            <Text style={styles.clubCtaText}>Use your existing account to create a club, launch competitions, invite members, and manage payments from one admin area.</Text>
+            <TouchableOpacity onPress={() => router.push('/create-club')} style={styles.clubCtaButton}>
+              <Text style={styles.clubCtaButtonText}>Create club</Text>
+              <Ionicons name="arrow-forward" size={17} color="#e0f2fe" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={styles.footerLinks}>
           <TouchableOpacity onPress={() => router.push('/faq')} style={styles.footerLinkItem}>
@@ -254,6 +261,8 @@ const styles = StyleSheet.create({
   clubCtaText: { color: '#cbd5e1', fontSize: 13, lineHeight: 20 },
   clubCtaButton: { marginTop: 2, borderWidth: 1, borderColor: '#7dd3fc66', backgroundColor: '#0ea5e933', borderRadius: 12, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
   clubCtaButtonText: { color: '#e0f2fe', fontSize: 14, fontWeight: '900' },
+  clubCtaBackButton: { borderRadius: 12, paddingVertical: 11, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', marginTop: 10 },
+  clubCtaBackButtonText: { color: '#dbeafe', fontSize: 13, fontWeight: '800' },
   signupRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
   signupText: { color: '#94a3b8', fontSize: 13 },
   signupLink: { color: '#38bdf8', fontSize: 13, fontWeight: '800' },

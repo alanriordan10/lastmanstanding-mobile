@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { api } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import type { AuthResponse } from '../types';
@@ -27,7 +27,12 @@ const adminBenefits = [
 
 export default function RegisterClubScreen() {
   const router = useRouter();
-  const { loginWithData } = useAuth();
+  const params = useLocalSearchParams<{ mode?: string; returnTo?: string }>();
+  const { loginWithData, user } = useAuth();
+  const requestedMode = Array.isArray(params.mode) ? params.mode[0] : params.mode;
+  const [clubMode, setClubMode] = useState<'new' | 'existing'>(requestedMode === 'existing' ? 'existing' : 'new');
+  const existingUserMode = clubMode === 'existing';
+  const exitTarget = user ? '/(tabs)/competitions' : '/login';
 
   const [step, setStep] = useState<Step>(1);
   const [clubName, setClubName] = useState('');
@@ -42,6 +47,12 @@ export default function RegisterClubScreen() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [usernameStatus, setUsernameStatus] = useState<CheckState>('idle');
   const [usernameMessage, setUsernameMessage] = useState('');
+
+  useEffect(() => {
+    if (requestedMode === 'existing') {
+      router.replace('/create-club');
+    }
+  }, [requestedMode, router]);
 
   const clearFieldError = (field: keyof FieldErrors) => {
     setFieldErrors((current) => {
@@ -119,12 +130,40 @@ export default function RegisterClubScreen() {
     if (!clubName.trim()) errors.clubName = 'Club name is required.';
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
+    if (existingUserMode) {
+      void onSubmit();
+      return;
+    }
     setStep(2);
   };
 
   const onSubmit = async () => {
     const errors: FieldErrors = {};
     if (!clubName.trim()) errors.clubName = 'Club name is required.';
+
+    if (existingUserMode) {
+      setFieldErrors(errors);
+      if (Object.keys(errors).length > 0) return;
+      if (!user) {
+        setFieldErrors({ form: 'Sign in first to create a club with your existing account.' });
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const { data } = await api.post<RegisterClubResponse>('/auth/create-club', {
+          clubName: clubName.trim(),
+          clubDescription: clubDescription.trim() ? clubDescription.trim() : null,
+        });
+        await loginWithData(data.auth);
+        router.replace('/(tabs)/club-admin');
+      } catch (e: any) {
+        setFieldErrors({ form: e?.response?.data?.message ?? 'Failed to create club.' });
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (!username.trim()) errors.username = 'Username is required.';
     else if (username.trim().length < 3) errors.username = 'Username must be at least 3 characters.';
     else if (/\s/.test(username.trim())) errors.username = 'Username cannot contain spaces.';
@@ -169,8 +208,8 @@ export default function RegisterClubScreen() {
           <View style={styles.heroIcon}>
             <Ionicons name="home" size={34} color="#082f49" />
           </View>
-          <Text style={styles.heroTitle}>Register Your Club</Text>
-          <Text style={styles.heroSub}>Set up your club, create competitions, and start inviting members with private or public join flows.</Text>
+          <Text style={styles.heroTitle}>{existingUserMode ? 'Create Your Club' : 'Register Your Club'}</Text>
+          <Text style={styles.heroSub}>{existingUserMode ? 'Use your existing account to launch a club and manage competitions.' : 'Set up your club, create competitions, and start inviting members with private or public join flows.'}</Text>
           <View style={styles.heroStats}>
             <Metric label="Setup" value="2 steps" />
             <Metric label="Admin" value="Instant" />
@@ -182,17 +221,29 @@ export default function RegisterClubScreen() {
           <View style={styles.formIcon}>
             <Ionicons name="home-outline" size={28} color="#7dd3fc" />
           </View>
-          <Text style={styles.formIntroTitle}>Register Your Club</Text>
-          <Text style={styles.formIntroCopy}>Set up your club in minutes and start running Last Man Standing competitions.</Text>
+          <Text style={styles.formIntroTitle}>{existingUserMode ? 'Create Your Club' : 'Register Your Club'}</Text>
+          <Text style={styles.formIntroCopy}>{existingUserMode ? 'Use your existing signed-in account to launch the club.' : 'Set up your club in minutes and start running Last Man Standing competitions.'}</Text>
         </View>
 
-        <View style={styles.stepper}>
-          <StepBadge index={1} label="Club Details" active={step === 1} complete={step > 1} />
-          <View style={styles.stepLine} />
-          <StepBadge index={2} label="Your Account" active={step === 2} complete={false} />
-        </View>
 
-        {step === 1 ? (
+        {existingUserMode && !user ? (
+          <View style={styles.card}>
+            <Text style={styles.formTitle}>Sign in first</Text>
+            <Text style={styles.formCopy}>Sign in to continue creating your club with this existing account.</Text>
+            <TouchableOpacity onPress={() => router.replace(`/login?returnTo=${encodeURIComponent('/create-club')}`)} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Sign in to continue</Text>
+              <Ionicons name="arrow-forward" size={17} color="#ffffff" />
+            </TouchableOpacity>
+          </View>
+        ) : !existingUserMode ? (
+          <View style={styles.stepper}>
+            <StepBadge index={1} label="Club Details" active={step === 1} complete={step > 1} />
+            <View style={styles.stepLine} />
+            <StepBadge index={2} label="Your Account" active={step === 2} complete={false} />
+          </View>
+        ) : null}
+
+        {existingUserMode && !user ? null : step === 1 ? (
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <Text style={styles.formTitle}>Tell us about your club</Text>
@@ -218,11 +269,11 @@ export default function RegisterClubScreen() {
 
             {fieldErrors.form ? <Text style={styles.error}>{fieldErrors.form}</Text> : null}
             <TouchableOpacity onPress={goNext} style={styles.primaryBtn}>
-              <Text style={styles.primaryBtnText}>Continue</Text>
-              <Ionicons name="arrow-forward" size={17} color="#ffffff" />
+              <Text style={styles.primaryBtnText}>{existingUserMode ? 'Create Club' : 'Continue'}</Text>
+              <Ionicons name={existingUserMode ? 'checkmark-circle' : 'arrow-forward'} size={17} color="#ffffff" />
             </TouchableOpacity>
           </View>
-        ) : (
+        ) : !existingUserMode ? (
           <View style={styles.card}>
             <View style={styles.accountHeader}>
               <TouchableOpacity onPress={() => { setFieldErrors({}); setStep(1); }} style={styles.backButton}>
@@ -267,13 +318,21 @@ export default function RegisterClubScreen() {
               <Ionicons name="checkmark-circle" size={17} color="#ffffff" />
             </TouchableOpacity>
           </View>
-        )}
+        ) : null}
 
         <View style={styles.footerLinks}>
-          <Text style={styles.footerText}>Already have an account?</Text>
-          <TouchableOpacity onPress={() => router.replace('/login')}>
-            <Text style={styles.footerLink}>Sign in</Text>
-          </TouchableOpacity>
+          {user ? (
+            <TouchableOpacity onPress={() => router.replace(exitTarget)} style={styles.footerActionPill}>
+              <Text style={styles.footerActionPillText}>Cancel setup</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <Text style={styles.footerText}>Already have an account?</Text>
+              <TouchableOpacity onPress={() => router.replace(`/login?returnTo=${encodeURIComponent('/create-club')}`)}>
+                <Text style={styles.footerLink}>Sign in</Text>
+              </TouchableOpacity>
+            </>
+          )}
           <Text style={styles.footerSeparator}>•</Text>
           <TouchableOpacity onPress={() => router.push('/faq')}>
             <Text style={styles.footerLink}>FAQ</Text>
@@ -373,9 +432,13 @@ const styles = StyleSheet.create({
   showButton: { position: 'absolute', right: 12, top: 0, bottom: 0, justifyContent: 'center' },
   showButtonText: { color: '#94a3b8', fontSize: 12, fontWeight: '900' },
   footerLinks: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 7, paddingVertical: 5 },
+  footerActionPill: { borderWidth: 1, borderColor: '#ffffff1f', backgroundColor: '#ffffff08', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
+  footerActionPillText: { color: '#dbeafe', fontSize: 12, fontWeight: '900' },
   footerText: { color: '#94a3b8', fontSize: 13 },
   footerLink: { color: '#38bdf8', fontSize: 13, fontWeight: '900' },
   footerSeparator: { color: '#475569', fontSize: 12, fontWeight: '900' },
+  backToSignInLink: { alignSelf: 'center', paddingTop: 2, paddingBottom: 1 },
+  backToSignInLinkText: { color: '#7dd3fc', fontSize: 12, fontWeight: '900' },
   error: { color: '#fca5a5', fontSize: 12, fontWeight: '700', lineHeight: 17 },
   ok: { color: '#86efac', fontSize: 11, fontWeight: '800', marginTop: -5 },
   warn: { color: '#fca5a5', fontSize: 11, fontWeight: '800', marginTop: -5 },

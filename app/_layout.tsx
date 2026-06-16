@@ -24,6 +24,7 @@ export default function RootLayout() {
         <Stack.Screen name="reset-password" options={{ title: 'Reset Password' }} />
         <Stack.Screen name="oauth2/callback" options={{ headerShown: false }} />
         <Stack.Screen name="register-club" options={{ title: 'Create Club' }} />
+        <Stack.Screen name="create-club" options={{ title: 'Create Club' }} />
         <Stack.Screen name="faq" options={{ title: 'FAQ' }} />
         <Stack.Screen name="contact" options={{ title: 'Contact Us' }} />
         <Stack.Screen name="stripe-connect/return" options={{ title: 'Stripe Connect' }} />

@@ -476,13 +476,6 @@ export default function CompetitionDetailScreen() {
     for (const pick of myStatusQuery.data?.picks ?? []) map.set(pick.gameweekId, pick);
     return map;
   }, [myStatusQuery.data?.picks]);
-  const consumedTeamIds = useMemo(() => {
-    const ids = new Set<number>(myStatusQuery.data?.usedTeamIds ?? []);
-    for (const pick of myStatusQuery.data?.picks ?? []) {
-      if (pick.locked || pick.outcome !== 'PENDING') ids.add(pick.teamId);
-    }
-    return ids;
-  }, [myStatusQuery.data?.picks, myStatusQuery.data?.usedTeamIds]);
   const handlePick = (pick: { gwId: number; teamId: number; teamName: string; teamShortName: string; useLifeline: boolean }) => {
     if (pickMutation.isPending) return;
     const currentPick = myPickByGameweek.get(pick.gwId);
@@ -555,6 +548,37 @@ export default function CompetitionDetailScreen() {
   const nextMissingPickWeek = missingPickGameweeks[0] ?? null;
   const nextFutureLockWeek = openPickGameweeks[0] ?? null;
   const nextFutureLockLabel = nextFutureLockWeek?.lockAt ? `Next lock: ${distanceToNow(nextFutureLockWeek.lockAt)}` : null;
+
+  const gameweekMetaById = useMemo(() => {
+    const map = new Map<number, { status: string; lockAt: string }>();
+    for (const gw of gameweeks) {
+      map.set(gw.gameweekId, { status: gw.gameweekStatus, lockAt: gw.lockAt });
+    }
+    return map;
+  }, [gameweeks]);
+
+  const { consumedTeamIds, reservedTeamIds } = useMemo(() => {
+    const consumed = new Set<number>();
+    const reserved = new Set<number>();
+    const pickTeamIds = new Set<number>();
+
+    for (const pick of myStatusQuery.data?.picks ?? []) {
+      pickTeamIds.add(pick.teamId);
+      const meta = gameweekMetaById.get(pick.gameweekId);
+      const isUpcoming = meta?.status === 'UPCOMING' && !isPastDate(meta.lockAt);
+      if (isUpcoming && !pick.locked && pick.outcome === 'PENDING') {
+        reserved.add(pick.teamId);
+      } else {
+        consumed.add(pick.teamId);
+      }
+    }
+
+    for (const teamId of myStatusQuery.data?.usedTeamIds ?? []) {
+      if (!pickTeamIds.has(teamId)) consumed.add(teamId);
+    }
+
+    return { consumedTeamIds: consumed, reservedTeamIds: reserved };
+  }, [gameweekMetaById, myStatusQuery.data?.picks, myStatusQuery.data?.usedTeamIds]);
 
   const lockedGameweeks = useMemo(
     () => gameweeks.filter((gw) => gw.gameweekStatus === 'LOCKED' || gw.gameweekStatus === 'IN_PROGRESS' || gw.gameweekStatus === 'COMPLETED' || isPastDate(gw.lockAt)),
@@ -1813,6 +1837,9 @@ export default function CompetitionDetailScreen() {
                       const awayIsMyPick = myPickForGw?.teamId === f.awayTeamId;
                       const homeUsed = consumedTeamIds.has(f.homeTeamId) && !homeIsMyPick;
                       const awayUsed = consumedTeamIds.has(f.awayTeamId) && !awayIsMyPick;
+                      const showReservedForThisGw = gw.gameweekStatus === 'UPCOMING' && !isPastDate(gw.lockAt);
+                      const homeReserved = showReservedForThisGw && reservedTeamIds.has(f.homeTeamId) && !homeIsMyPick && !homeUsed;
+                      const awayReserved = showReservedForThisGw && reservedTeamIds.has(f.awayTeamId) && !awayIsMyPick && !awayUsed;
                       const homePickStat = getTeamPickStat(gw.gameweekId, f.homeTeamId, f.homeTeamShortName, f.homeTeamName);
                       const awayPickStat = getTeamPickStat(gw.gameweekId, f.awayTeamId, f.awayTeamShortName, f.awayTeamName);
                       const homeConfidence = calculatePickConfidence(f, 'home', homePickStat, gw.gameweekStatus);
@@ -1823,9 +1850,9 @@ export default function CompetitionDetailScreen() {
                       return (
                         <View key={f.id} style={styles.fixtureCardWithInsight}>
                           <View style={styles.webFixtureRow}>
-                            <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} pickStat={homePickStat} confidence={homeConfidence} clickable={canPickThisGw && !homeUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
+                            <TeamPickSide align="right" name={f.homeTeamName} shortName={f.homeTeamShortName} picked={homeIsMyPick} used={homeUsed} reserved={homeReserved} pickStat={homePickStat} confidence={homeConfidence} clickable={canPickThisGw && !homeUsed && !homeReserved && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.homeTeamId, teamName: f.homeTeamName, teamShortName: f.homeTeamShortName, useLifeline: lifelineChecked })} />
                             <FixtureCenter fixture={f} />
-                            <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} pickStat={awayPickStat} confidence={awayConfidence} clickable={canPickThisGw && !awayUsed && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
+                            <TeamPickSide align="left" name={f.awayTeamName} shortName={f.awayTeamShortName} picked={awayIsMyPick} used={awayUsed} reserved={awayReserved} pickStat={awayPickStat} confidence={awayConfidence} clickable={canPickThisGw && !awayUsed && !awayReserved && !pickMutation.isPending} onPress={() => handlePick({ gwId: gw.gameweekId, teamId: f.awayTeamId, teamName: f.awayTeamName, teamShortName: f.awayTeamShortName, useLifeline: lifelineChecked })} />
                           </View>
                           {pickedConfidence && pickedTeamName ? <PickInsightPanel teamName={pickedTeamName} confidence={pickedConfidence} pickStat={pickedStat} /> : null}
                         </View>
@@ -2040,12 +2067,13 @@ function FixtureCenter({ fixture, compact }: { fixture: Fixture; compact?: boole
   return <View style={[styles.webCenterCol, compact ? styles.webCenterColCompact : null]}><Text style={[styles.kickDate, compact ? styles.kickDateCompact : null]}>{formatKickoffDate(fixture.kickoffAt)}</Text><Text style={[styles.kickTime, compact ? styles.kickTimeCompact : null]}>{formatKickoffTime(fixture.kickoffAt)}</Text></View>;
 }
 
-function TeamPickSide({ align, name, shortName, picked, used, pickStat, confidence, clickable, compact, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; pickStat?: PickStat | null; confidence?: PickConfidence | null; clickable: boolean; compact?: boolean; onPress: () => void }) {
+function TeamPickSide({ align, name, shortName, picked, used, reserved, pickStat, confidence, clickable, compact, onPress }: { align: 'left' | 'right'; name: string; shortName: string; picked: boolean; used: boolean; reserved?: boolean; pickStat?: PickStat | null; confidence?: PickConfidence | null; clickable: boolean; compact?: boolean; onPress: () => void }) {
+  const showStatus = picked || used || reserved;
   return (
-    <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, compact ? styles.webTeamSideCompact : null, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, clickable && !picked ? styles.webTeamClickable : null]}>
+    <TouchableOpacity disabled={!clickable && !picked} onPress={onPress} style={[styles.webTeamSide, compact ? styles.webTeamSideCompact : null, align === 'right' ? styles.webTeamRight : styles.webTeamLeft, picked ? styles.webTeamPicked : null, used && !picked ? styles.webTeamUsed : null, reserved && !picked && !used ? styles.webTeamReserved : null, clickable && !picked ? styles.webTeamClickable : null]}>
       <View style={[styles.webTeamLine, align === 'right' ? styles.webTeamLineRight : null]}>
-        <Text style={[styles.webTeamShort, compact ? styles.webTeamShortCompact : null, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : null]}>{shortName}</Text>
-        {(picked || used) ? <Text style={[styles.webTeamStatus, picked ? styles.webTeamPickedText : styles.webTeamUsedText]}>{picked ? 'Picked' : 'Used'}</Text> : null}
+        <Text style={[styles.webTeamShort, compact ? styles.webTeamShortCompact : null, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : reserved ? styles.webTeamReservedText : null]}>{shortName}</Text>
+        {showStatus ? <Text style={[styles.webTeamStatus, picked ? styles.webTeamPickedText : used ? styles.webTeamUsedText : styles.webTeamReservedText]}>{picked ? 'Picked' : used ? 'Used' : 'Resvd'}</Text> : null}
       </View>
       {!compact ? <Text style={[styles.webTeamName, align === 'right' ? styles.webTeamNameRight : null]} numberOfLines={1}>{name}</Text> : null}
       {(pickStat || confidence) && !compact ? (
@@ -2484,6 +2512,7 @@ const styles = StyleSheet.create({
   webTeamClickable: { borderWidth: 1, borderColor: '#4b5563', backgroundColor: '#33415555' },
   webTeamPicked: { borderWidth: 2, borderColor: '#7dd3fc', backgroundColor: '#0284c7dd' },
   webTeamUsed: { backgroundColor: 'transparent' },
+  webTeamReserved: { backgroundColor: 'transparent' },
   webTeamLine: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   webTeamLineRight: { flexDirection: 'row-reverse' },
   webTeamShort: { color: '#e5e7eb', fontSize: 12, fontWeight: '900' },
@@ -2510,6 +2539,7 @@ const styles = StyleSheet.create({
   webPickStatSubTextPicked: { color: '#e5e7eb' },
   webTeamPickedText: { color: '#fff' },
   webTeamUsedText: { color: '#fcd34d', textDecorationLine: 'line-through' },
+  webTeamReservedText: { color: '#67e8f9' },
   webCenterCol: { minWidth: 72, alignItems: 'center', justifyContent: 'center' },
   webCenterColCompact: { minWidth: 54 },
   scoreText: { color: '#fff', fontSize: 15, fontWeight: '900' },
