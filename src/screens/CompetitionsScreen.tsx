@@ -8,6 +8,7 @@ import type { Competition, MyCompetition } from '../types';
 import { FilterPill, MetaText, ScreenTitle, StatusPill } from '../components/ui';
 import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
+import { useAuth } from '../auth/AuthContext';
 
 type StatusFilter = 'ALL' | 'UPCOMING' | 'ACTIVE';
 type FeeFilter = 'ALL' | 'FREE' | 'PAID';
@@ -24,6 +25,7 @@ type ActivityItem = {
   detail: string;
   competitionId: number;
   priority: number;
+  dismissible?: boolean;
 };
 
 type CompetitionLike = Competition & {
@@ -87,9 +89,11 @@ function paymentLabel(comp: CompetitionLike) {
 
 export default function CompetitionsScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const [mode, setMode] = useState<LandingMode>('available');
   const [search, setSearch] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [dismissedActivityIds, setDismissedActivityIds] = useState<Set<string>>(() => new Set());
   const [joinCodeStatus, setJoinCodeStatus] = useState<{ tone: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [pendingInviteCompetition, setPendingInviteCompetition] = useState<Competition | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
@@ -133,6 +137,35 @@ export default function CompetitionsScreen() {
       void myDetailsQuery.refetch();
     }, [competitionsQuery.refetch, myDetailsQuery.refetch]),
   );
+
+  const activityUserId = user?.id ?? user?.userId ?? null;
+  const activityDismissStorageKey = activityUserId ? `lms.mobile.dismissedActivity.${activityUserId}` : null;
+
+  useEffect(() => {
+    if (!activityDismissStorageKey) {
+      setDismissedActivityIds(new Set());
+      return;
+    }
+    try {
+      const saved = globalThis?.localStorage?.getItem(activityDismissStorageKey);
+      const parsed = saved ? JSON.parse(saved) : [];
+      setDismissedActivityIds(new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : []));
+    } catch {
+      setDismissedActivityIds(new Set());
+    }
+  }, [activityDismissStorageKey]);
+
+  const dismissActivity = useCallback((activityId: string) => {
+    if (!activityDismissStorageKey) return;
+    setDismissedActivityIds((prev) => {
+      const next = new Set(prev);
+      next.add(activityId);
+      try {
+        globalThis?.localStorage?.setItem(activityDismissStorageKey, JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+  }, [activityDismissStorageKey]);
 
 
   const joinCodeMutation = useMutation({
@@ -289,6 +322,7 @@ export default function CompetitionsScreen() {
           detail: comp.paymentMode === 'STRIPE' ? `Complete online payment${entrySuffix} before making picks.` : `The organiser still needs to mark this entry as paid${entrySuffix}.`,
           competitionId: comp.id,
           priority: 10,
+          dismissible: false,
         };
       }
       if (row.myStatus === 'WINNER') {
@@ -300,6 +334,7 @@ export default function CompetitionsScreen() {
           detail: `This entry is the last survivor standing${entrySuffix}.`,
           competitionId: comp.id,
           priority: 30,
+          dismissible: true,
         };
       }
       if (row.myStatus === 'ELIMINATED') {
@@ -311,6 +346,7 @@ export default function CompetitionsScreen() {
           detail: `Eliminated${row.eliminatedWeek ? ` in Gameweek ${row.eliminatedWeek}` : ''}${entrySuffix}. You can still follow the survivor table.`,
           competitionId: comp.id,
           priority: 40,
+          dismissible: true,
         };
       }
       if (row.pickRequired === true) {
@@ -322,6 +358,7 @@ export default function CompetitionsScreen() {
           detail: `Choose your team before the next lock${entrySuffix}.`,
           competitionId: comp.id,
           priority: 20,
+          dismissible: false,
         };
       }
       if (row.myStatus === 'ACTIVE' && comp.status === 'ACTIVE') {
@@ -333,6 +370,7 @@ export default function CompetitionsScreen() {
           detail: `${comp.activeCount ?? 0} of ${comp.participantCount ?? 0} still standing${entrySuffix}.`,
           competitionId: comp.id,
           priority: 50,
+          dismissible: true,
         };
       }
       if (comp.status === 'COMPLETED') {
@@ -344,6 +382,7 @@ export default function CompetitionsScreen() {
           detail: comp.winnerUsername ? `Winner: ${comp.winnerUsername}${entrySuffix}.` : `Final results are available${entrySuffix}.`,
           competitionId: comp.id,
           priority: 60,
+          dismissible: true,
         };
       }
       return {
@@ -354,10 +393,14 @@ export default function CompetitionsScreen() {
         detail: `Your entry is registered${entrySuffix}. First gameweek: ${formatDate(comp.firstGameweekDate ?? comp.startDate)}.`,
         competitionId: comp.id,
         priority: 70,
+        dismissible: true,
       };
     });
-    return items.sort((a, b) => a.priority - b.priority).slice(0, 6);
-  }, [myRows, myEntryCountByCompetition]);
+    return items
+      .filter((item) => !item.dismissible || !dismissedActivityIds.has(item.id))
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, 6);
+  }, [dismissedActivityIds, myRows, myEntryCountByCompetition]);
 
   const visibleMineNeedsAction = mineFilter === 'ALL' || mineFilter === 'NEEDS_ACTION' || mineFilter === 'PICK_DUE' || mineFilter === 'AWAITING_PAYMENT'
     ? mineNeedsAction.filter((row) => {
@@ -408,7 +451,7 @@ export default function CompetitionsScreen() {
         <DataFreshnessBar label="Competition data" updatedAt={lastUpdatedAt || null} refreshing={isRefreshing} onRefresh={refresh} />
 
         {activityItems.length > 0 ? (
-          <ActivityPanel items={activityItems} onOpen={(competitionId) => router.push(`/competitions/${competitionId}`)} />
+          <ActivityPanel items={activityItems} onOpen={(competitionId) => router.push(`/competitions/${competitionId}`)} onDismiss={dismissActivity} />
         ) : null}
 
         <View style={styles.webControlsCard}>
@@ -631,7 +674,7 @@ function FilterStatTile({ label, value, active, onPress }: { label: string; valu
   );
 }
 
-function ActivityPanel({ items, onOpen }: { items: ActivityItem[]; onOpen: (competitionId: number) => void }) {
+function ActivityPanel({ items, onOpen, onDismiss }: { items: ActivityItem[]; onOpen: (competitionId: number) => void; onDismiss: (activityId: string) => void }) {
   return (
     <View style={styles.activityPanel}>
       <View style={styles.activityHeaderRow}>
@@ -642,25 +685,40 @@ function ActivityPanel({ items, onOpen }: { items: ActivityItem[]; onOpen: (comp
         <Text style={styles.activityCount}>{items.length}</Text>
       </View>
       <View style={styles.activityList}>
-        {items.map((item) => <ActivityRow key={item.id} item={item} onOpen={() => onOpen(item.competitionId)} />)}
+        {items.map((item) => <ActivityRow key={item.id} item={item} onOpen={() => onOpen(item.competitionId)} onDismiss={() => onDismiss(item.id)} />)}
       </View>
     </View>
   );
 }
 
-function ActivityRow({ item, onOpen }: { item: ActivityItem; onOpen: () => void }) {
+function ActivityRow({ item, onOpen, onDismiss }: { item: ActivityItem; onOpen: () => void; onDismiss: () => void }) {
   return (
-    <TouchableOpacity style={styles.activityRow} onPress={onOpen} activeOpacity={0.86}>
-      <View style={[styles.activityToneDot, item.tone === 'warn' ? styles.activityWarn : item.tone === 'success' ? styles.activitySuccess : item.tone === 'danger' ? styles.activityDanger : item.tone === 'brand' ? styles.activityBrand : styles.activityNeutral]} />
-      <View style={styles.activityBody}>
-        <View style={styles.activityLabelRow}>
-          <Text style={[styles.activityLabel, item.tone === 'warn' ? styles.activityLabelWarn : item.tone === 'success' ? styles.activityLabelSuccess : item.tone === 'danger' ? styles.activityLabelDanger : item.tone === 'brand' ? styles.activityLabelBrand : null]}>{item.label}</Text>
+    <View style={styles.activityRow}>
+      <TouchableOpacity style={styles.activityMainAction} onPress={onOpen} activeOpacity={0.86}>
+        <View style={[styles.activityToneDot, item.tone === 'warn' ? styles.activityWarn : item.tone === 'success' ? styles.activitySuccess : item.tone === 'danger' ? styles.activityDanger : item.tone === 'brand' ? styles.activityBrand : styles.activityNeutral]} />
+        <View style={styles.activityBody}>
+          <View style={styles.activityLabelRow}>
+            <Text style={[styles.activityLabel, item.tone === 'warn' ? styles.activityLabelWarn : item.tone === 'success' ? styles.activityLabelSuccess : item.tone === 'danger' ? styles.activityLabelDanger : item.tone === 'brand' ? styles.activityLabelBrand : null]}>{item.label}</Text>
+          </View>
+          <Text style={styles.activityItemTitle} numberOfLines={1}>{item.title}</Text>
+          <Text style={styles.activityDetail} numberOfLines={2}>{item.detail}</Text>
         </View>
-        <Text style={styles.activityItemTitle} numberOfLines={1}>{item.title}</Text>
-        <Text style={styles.activityDetail} numberOfLines={2}>{item.detail}</Text>
+      </TouchableOpacity>
+      <View style={styles.activityActions}>
+        {item.dismissible ? (
+          <TouchableOpacity
+            style={styles.activityDismissButton}
+            onPress={onDismiss}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.activityDismissText}>Dismiss</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity onPress={onOpen} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={styles.activityOpen}>Open</Text>
+        </TouchableOpacity>
       </View>
-      <Text style={styles.activityOpen}>Open</Text>
-    </TouchableOpacity>
+    </View>
   );
 }
 
@@ -838,6 +896,7 @@ const styles = StyleSheet.create({
   activityCount: { overflow: 'hidden', color: '#bae6fd', borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#0ea5e91f', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, fontSize: 11, fontWeight: '900' },
   activityList: { gap: 8 },
   activityRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1, borderColor: '#ffffff12', backgroundColor: '#ffffff08', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 10 },
+  activityMainAction: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   activityToneDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
   activityWarn: { backgroundColor: '#facc15' },
   activitySuccess: { backgroundColor: '#22c55e' },
@@ -853,6 +912,9 @@ const styles = StyleSheet.create({
   activityLabelBrand: { color: '#7dd3fc' },
   activityItemTitle: { marginTop: 3, color: '#ffffff', fontSize: 13, fontWeight: '900' },
   activityDetail: { marginTop: 3, color: '#94a3b8', fontSize: 11.5, lineHeight: 16 },
+  activityActions: { alignItems: 'flex-end', gap: 7, marginTop: 1 },
+  activityDismissButton: { borderWidth: 1, borderColor: '#ffffff18', backgroundColor: '#ffffff0a', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+  activityDismissText: { color: '#cbd5e1', fontSize: 10, fontWeight: '900' },
   activityOpen: { color: '#7dd3fc', fontSize: 11, fontWeight: '900', marginTop: 2 },
   webModeTabs: { flexDirection: 'row', borderWidth: 1, borderColor: '#ffffff14', borderRadius: 18, backgroundColor: '#0f172acc', padding: 6, gap: 6 },
   statGrid: { marginTop: 14, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
