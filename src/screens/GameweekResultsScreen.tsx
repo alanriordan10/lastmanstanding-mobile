@@ -56,10 +56,10 @@ export default function GameweekResultsScreen() {
     enabled: Number.isFinite(compId),
     refetchInterval: (query) => {
       const competition = query.state.data as Competition | undefined;
-      return competition?.status === 'ACTIVE' ? 120000 : false;
+      return competition?.status === 'ACTIVE' ? 300000 : false;
     },
   });
-  const liveResultsRefetchInterval = compQuery.data?.status === 'ACTIVE' ? 120000 : false;
+  const liveResultsRefetchInterval = compQuery.data?.status === 'ACTIVE' ? 300000 : false;
 
   const selectionsQuery = useQuery({
     queryKey: ['gameweek-results', compId, gameweekId],

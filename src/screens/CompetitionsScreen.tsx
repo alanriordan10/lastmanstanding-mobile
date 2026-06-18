@@ -9,6 +9,7 @@ import { FilterPill, MetaText, ScreenTitle, StatusPill } from '../components/ui'
 import { DataFreshnessBar } from '../components/DataFreshnessBar';
 import { colors, spacing } from '../theme/tokens';
 import { useAuth } from '../auth/AuthContext';
+import * as SecureStore from 'expo-secure-store';
 
 type StatusFilter = 'ALL' | 'UPCOMING' | 'ACTIVE';
 type FeeFilter = 'ALL' | 'FREE' | 'PAID';
@@ -87,6 +88,33 @@ function paymentLabel(comp: CompetitionLike) {
   return `€${comp.entryFee}`;
 }
 
+async function readDismissedActivityIds(storageKey: string): Promise<string[]> {
+  try {
+    const saved = await SecureStore.getItemAsync(storageKey);
+    const parsed = saved ? JSON.parse(saved) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    try {
+      const saved = globalThis?.localStorage?.getItem(storageKey);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function writeDismissedActivityIds(storageKey: string, ids: string[]): Promise<void> {
+  const value = JSON.stringify(ids.slice(-200));
+  try {
+    await SecureStore.setItemAsync(storageKey, value);
+  } catch {
+    try {
+      globalThis?.localStorage?.setItem(storageKey, value);
+    } catch {}
+  }
+}
+
 export default function CompetitionsScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -119,7 +147,7 @@ export default function CompetitionsScreen() {
     queryFn: async () => (await api.get<Competition[]>('/competitions/upcoming')).data,
     refetchInterval: (query) => {
       const rows = query.state.data as Competition[] | undefined;
-      return rows?.some((competition) => competition.status === 'ACTIVE') ? 120000 : false;
+      return rows?.some((competition) => competition.status === 'ACTIVE') ? 300000 : false;
     },
   });
   const myDetailsQuery = useQuery({
@@ -127,7 +155,7 @@ export default function CompetitionsScreen() {
     queryFn: async () => (await api.get<MyCompetition[]>('/competitions/my/details')).data ?? [],
     refetchInterval: (query) => {
       const rows = query.state.data as MyCompetition[] | undefined;
-      return rows?.some((row) => row.competition.status === 'ACTIVE') ? 120000 : false;
+      return rows?.some((row) => row.competition.status === 'ACTIVE') ? 300000 : false;
     },
   });
 
@@ -142,17 +170,17 @@ export default function CompetitionsScreen() {
   const activityDismissStorageKey = activityUserId ? `lms.mobile.dismissedActivity.${activityUserId}` : null;
 
   useEffect(() => {
+    let cancelled = false;
     if (!activityDismissStorageKey) {
       setDismissedActivityIds(new Set());
-      return;
+      return () => { cancelled = true; };
     }
-    try {
-      const saved = globalThis?.localStorage?.getItem(activityDismissStorageKey);
-      const parsed = saved ? JSON.parse(saved) : [];
-      setDismissedActivityIds(new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : []));
-    } catch {
-      setDismissedActivityIds(new Set());
-    }
+
+    void readDismissedActivityIds(activityDismissStorageKey).then((ids) => {
+      if (!cancelled) setDismissedActivityIds(new Set(ids));
+    });
+
+    return () => { cancelled = true; };
   }, [activityDismissStorageKey]);
 
   const dismissActivity = useCallback((activityId: string) => {
@@ -160,9 +188,7 @@ export default function CompetitionsScreen() {
     setDismissedActivityIds((prev) => {
       const next = new Set(prev);
       next.add(activityId);
-      try {
-        globalThis?.localStorage?.setItem(activityDismissStorageKey, JSON.stringify([...next]));
-      } catch {}
+      void writeDismissedActivityIds(activityDismissStorageKey, [...next]);
       return next;
     });
   }, [activityDismissStorageKey]);
@@ -301,12 +327,16 @@ export default function CompetitionsScreen() {
     return sortCompetitions(rows, (row) => row.competition as CompetitionLike);
   }, [myRows, search, statusFilter, feeFilter, sortBy, startWindow]);
 
-  const mineNeedsAction = filteredMine.filter((row) => row.paymentState === 'AWAITING_PAYMENT' || row.pickRequired === true);
-  const minePickDue = filteredMine.filter((row) => row.pickRequired === true);
-  const mineAwaitingPayment = filteredMine.filter((row) => row.paymentState === 'AWAITING_PAYMENT');
-  const mineActive = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'ACTIVE');
-  const mineUpcoming = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.paymentState !== 'AWAITING_PAYMENT' && row.competition.status === 'UPCOMING');
-  const mineEliminated = filteredMine.filter((row) => row.myStatus === 'ELIMINATED');
+  const isMineNeedsAction = (row: MyCompetition) => {
+    if (row.competition.status === 'COMPLETED' || row.myStatus === 'ELIMINATED' || row.myStatus === 'WINNER') return false;
+    return row.paymentState === 'AWAITING_PAYMENT' || row.pickRequired === true;
+  };
+  const mineNeedsAction = filteredMine.filter(isMineNeedsAction);
+  const minePickDue = filteredMine.filter((row) => isMineNeedsAction(row) && row.pickRequired === true);
+  const mineAwaitingPayment = filteredMine.filter((row) => isMineNeedsAction(row) && row.paymentState === 'AWAITING_PAYMENT');
+  const mineActive = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.competition.status === 'ACTIVE' && !isMineNeedsAction(row));
+  const mineUpcoming = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.competition.status === 'UPCOMING' && !isMineNeedsAction(row));
+  const mineEliminated = filteredMine.filter((row) => row.competition.status !== 'COMPLETED' && row.myStatus === 'ELIMINATED');
   const mineFinished = filteredMine.filter((row) => row.myStatus === 'WINNER' || row.competition.status === 'COMPLETED');
   const activityItems = useMemo<ActivityItem[]>(() => {
     const items = myRows.map((row) => {
@@ -836,21 +866,22 @@ function CompetitionCard({ comp, joined, joinedCount, onOpen }: { comp: Competit
 function MyCompetitionCard({ row, onOpen }: { row: MyCompetition; onOpen: () => void }) {
   const comp = row.competition as CompetitionLike;
   const activeCount = comp.activeCount ?? comp.participantCount ?? 0;
-  const statusText = row.myStatus === 'WINNER' ? 'Winner' : row.myStatus === 'ELIMINATED' ? 'Eliminated' : 'Active';
+  const isFinished = comp.status === 'COMPLETED';
+  const statusText = isFinished ? 'Finished' : row.myStatus === 'WINNER' ? 'Winner' : row.myStatus === 'ELIMINATED' ? 'Eliminated' : 'Active';
   const paymentText = row.paymentState === 'AWAITING_PAYMENT' && comp.paymentMode === 'STRIPE' ? 'Pay online' : row.paymentState === 'AWAITING_PAYMENT' ? 'Awaiting payment' : row.paymentState === 'PAID' ? 'Paid' : 'Not needed';
   const actionRequired = row.paymentState === 'AWAITING_PAYMENT';
   const clubAccent = comp.clubPrimaryColor ?? colors.brand;
 
   return (
     <TouchableOpacity style={[styles.myCard, { borderColor: `${clubAccent}55` }, actionRequired ? styles.myCardAction : null]} onPress={onOpen}>
-      <View style={[styles.myStatusDot, row.myStatus === 'ELIMINATED' ? styles.dotRed : row.myStatus === 'WINNER' ? styles.dotYellow : styles.dotGreen, row.myStatus === 'ACTIVE' ? { backgroundColor: clubAccent } : null]} />
+      <View style={[styles.myStatusDot, isFinished ? styles.dotNeutral : row.myStatus === 'ELIMINATED' ? styles.dotRed : row.myStatus === 'WINNER' ? styles.dotYellow : styles.dotGreen, !isFinished && row.myStatus === 'ACTIVE' ? { backgroundColor: clubAccent } : null]} />
       <View style={styles.myCardBody}>
         <View style={styles.myTitleRow}>
           {comp.clubLogoUrl ? <Image source={{ uri: comp.clubLogoUrl }} style={styles.myClubLogo} /> : null}
           <Text style={styles.myTitle} numberOfLines={1}>{comp.name}</Text>
           {row.entryNumber ? <Text style={[styles.entryBadge, { borderColor: `${clubAccent}55`, color: clubAccent }]}>{`#${row.entryNumber}`}</Text> : null}
         </View>
-        <Text style={[styles.myStatusText, { color: row.myStatus === 'ACTIVE' ? clubAccent : undefined }, actionRequired ? styles.actionText : null]}>{statusText}{actionRequired ? comp.paymentMode === 'STRIPE' ? ' · Pay online' : ' · Awaiting payment' : ''}</Text>
+        <Text style={[styles.myStatusText, { color: !isFinished && row.myStatus === 'ACTIVE' ? clubAccent : undefined }, actionRequired ? styles.actionText : null]}>{statusText}{actionRequired ? comp.paymentMode === 'STRIPE' ? ' · Pay online' : ' · Awaiting payment' : ''}</Text>
         <View style={styles.myChips}>
           <Text style={styles.myChip}>Players {comp.participantCount ?? 0}</Text>
           <Text style={styles.myChip}>Survivors {comp.status === 'ACTIVE' ? activeCount : '—'}</Text>
@@ -1046,6 +1077,7 @@ const styles = StyleSheet.create({
   dotGreen: { backgroundColor: '#22c55e' },
   dotRed: { backgroundColor: '#ef4444' },
   dotYellow: { backgroundColor: '#facc15' },
+  dotNeutral: { backgroundColor: '#64748b' },
   myCardBody: { flex: 1, minWidth: 0 },
   myTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   myClubLogo: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: '#ffffff26' },

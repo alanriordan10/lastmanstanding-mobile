@@ -65,7 +65,7 @@ export default function SurvivorTableScreen() {
     enabled: Number.isFinite(compId),
     refetchInterval: (query) => {
       const competition = query.state.data as Competition | undefined;
-      return competition?.status === 'ACTIVE' ? 120000 : false;
+      return competition?.status === 'ACTIVE' ? 300000 : false;
     },
   });
 
@@ -76,7 +76,7 @@ export default function SurvivorTableScreen() {
     refetchInterval: (query) => {
       const table = query.state.data as SurvivorTableResponse | undefined;
       const hasLive = table?.gameweeks?.some((gw) => gw.status === 'IN_PROGRESS');
-      return hasLive || compQuery.data?.status === 'ACTIVE' ? 120000 : false;
+      return hasLive ? 300000 : false;
     },
   });
 

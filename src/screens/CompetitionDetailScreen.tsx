@@ -233,7 +233,7 @@ export default function CompetitionDetailScreen() {
     enabled: Number.isFinite(id),
     refetchInterval: (query) => {
       const competition = query.state.data as Competition | undefined;
-      return competition?.status === 'ACTIVE' ? 120000 : false;
+      return competition?.status === 'ACTIVE' ? 300000 : false;
     },
   });
 
@@ -258,9 +258,9 @@ export default function CompetitionDetailScreen() {
 
   const joined = (myEntriesQuery.data?.length ?? 0) > 0;
   const activeCompetition = competitionQuery.data?.status === 'ACTIVE';
-  const activeDetailRefetchInterval = activeCompetition ? 120000 : false;
+  const activeDetailRefetchInterval = activeCompetition ? 300000 : false;
   const cachedCurrentGameweek = queryClient.getQueryData<GameweekResponse>(['competition', id, 'current-gameweek']);
-  const liveDetailRefetchInterval = cachedCurrentGameweek?.status === 'IN_PROGRESS' ? 60000 : false;
+  const liveDetailRefetchInterval = cachedCurrentGameweek?.status === 'IN_PROGRESS' ? 300000 : false;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
   const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
   const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);

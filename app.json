@@ -2,7 +2,7 @@
   "expo": {
     "name": "Last Man Standing",
     "slug": "lastmanstanding-mobile",
-    "version": "1.0.19",
+    "version": "1.0.20",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -26,7 +26,7 @@
       "permissions": [
         "POST_NOTIFICATIONS"
       ],
-      "versionCode": 19,
+      "versionCode": 20,
       "playStoreUrl": "",
       "blockedPermissions": [],
       "intentFilters": [
