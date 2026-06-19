@@ -537,8 +537,10 @@ export default function CompetitionDetailScreen() {
   }, [fixtures]);
 
   const openPickGameweeks = useMemo(
-    () => gameweeks.filter((gw) => gw.gameweekStatus === 'UPCOMING' && !isPastDate(gw.lockAt)),
-    [gameweeks],
+    () => competition?.status === 'COMPLETED'
+      ? []
+      : gameweeks.filter((gw) => gw.gameweekStatus === 'UPCOMING' && !isPastDate(gw.lockAt)),
+    [competition?.status, gameweeks],
   );
   const missingPickGameweeks = useMemo(
     () => openPickGameweeks.filter((gw) => !myPickByGameweek.has(gw.gameweekId)),
@@ -1703,7 +1705,7 @@ export default function CompetitionDetailScreen() {
           </View>
         ) : null}
 
-        {currentGameweek?.lockAt && !isPastDate(currentGameweek.lockAt) ? (
+        {competition?.status !== 'COMPLETED' && currentGameweek?.lockAt && !isPastDate(currentGameweek.lockAt) ? (
           <View style={styles.lockPanel}>
             <View>
               <Text style={styles.lockTitle}>Next gameweek lock</Text>
