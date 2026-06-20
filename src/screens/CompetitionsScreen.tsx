@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -27,6 +27,18 @@ type ActivityItem = {
   competitionId: number;
   priority: number;
   dismissible?: boolean;
+};
+
+type CompetitionAnnouncement = {
+  id: number;
+  competitionId: number;
+  competitionName: string;
+  clubName?: string | null;
+  title: string;
+  message: string;
+  createdByUsername: string;
+  createdAt: string | number[];
+  read: boolean;
 };
 
 type CompetitionLike = Competition & {
@@ -61,6 +73,14 @@ function formatDate(dateStr?: string | null) {
   const d = parseDate(dateStr);
   if (!d) return 'TBD';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatAnnouncementDate(value: string | number[]) {
+  const date = Array.isArray(value)
+    ? new Date(value[0], (value[1] ?? 1) - 1, value[2] ?? 1, value[3] ?? 0, value[4] ?? 0)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function fixtureSourceLabel(comp: CompetitionLike) {
@@ -117,6 +137,7 @@ async function writeDismissedActivityIds(storageKey: string, ids: string[]): Pro
 
 export default function CompetitionsScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { user } = useAuth();
   const [mode, setMode] = useState<LandingMode>('available');
   const [search, setSearch] = useState('');
@@ -159,11 +180,26 @@ export default function CompetitionsScreen() {
     },
   });
 
+  const announcementsQuery = useQuery({
+    queryKey: ['announcements'],
+    queryFn: async () => (await api.get<CompetitionAnnouncement[]>('/notifications/announcements')).data ?? [],
+    staleTime: 60_000,
+  });
+
+  const markAnnouncementRead = useMutation({
+    mutationFn: async (announcementId: number) => api.put(`/notifications/announcements/${announcementId}/read`),
+    onSuccess: (_response, announcementId) => {
+      queryClient.setQueryData<CompetitionAnnouncement[]>(['announcements'], (current = []) =>
+        current.map((item) => item.id === announcementId ? { ...item, read: true } : item));
+    },
+  });
+
   useFocusEffect(
     useCallback(() => {
       void competitionsQuery.refetch();
       void myDetailsQuery.refetch();
-    }, [competitionsQuery.refetch, myDetailsQuery.refetch]),
+      void announcementsQuery.refetch();
+    }, [competitionsQuery.refetch, myDetailsQuery.refetch, announcementsQuery.refetch]),
   );
 
   const activityUserId = user?.id ?? user?.userId ?? null;
@@ -338,6 +374,8 @@ export default function CompetitionsScreen() {
   const mineUpcoming = filteredMine.filter((row) => row.myStatus === 'ACTIVE' && row.competition.status === 'UPCOMING' && !isMineNeedsAction(row));
   const mineEliminated = filteredMine.filter((row) => row.competition.status !== 'COMPLETED' && row.myStatus === 'ELIMINATED');
   const mineFinished = filteredMine.filter((row) => row.myStatus === 'WINNER' || row.competition.status === 'COMPLETED');
+  const unreadAnnouncements = (announcementsQuery.data ?? []).filter((announcement) => !announcement.read);
+
   const activityItems = useMemo<ActivityItem[]>(() => {
     const items = myRows.map((row) => {
       const comp = row.competition as CompetitionLike;
@@ -456,7 +494,7 @@ export default function CompetitionsScreen() {
     joinCodeMutation.mutate(code);
   };
 
-  const refresh = () => void Promise.all([competitionsQuery.refetch(), myDetailsQuery.refetch()]);
+  const refresh = () => void Promise.all([competitionsQuery.refetch(), myDetailsQuery.refetch(), announcementsQuery.refetch()]);
 
   return (
     <SafeAreaView edges={['left', 'right', 'bottom']} style={styles.container}>
@@ -479,6 +517,31 @@ export default function CompetitionsScreen() {
         </View>
 
         <DataFreshnessBar label="Competition data" updatedAt={lastUpdatedAt || null} refreshing={isRefreshing} onRefresh={refresh} />
+
+        {unreadAnnouncements.length > 0 ? (
+          <View style={styles.announcementPanel}>
+            <View style={styles.announcementHeader}>
+              <View>
+                <Text style={styles.announcementEyebrow}>From your organisers</Text>
+                <Text style={styles.announcementTitle}>Announcements</Text>
+              </View>
+              <Text style={styles.announcementBadge}>{unreadAnnouncements.length} new</Text>
+            </View>
+            {unreadAnnouncements.slice(0, 5).map((announcement) => (
+              <View key={announcement.id} style={styles.announcementCard}>
+                <TouchableOpacity style={styles.announcementMain} onPress={() => router.push(`/competitions/${announcement.competitionId}`)} activeOpacity={0.86}>
+                  <Text style={styles.announcementCompetition}>{announcement.competitionName}</Text>
+                  <Text style={styles.announcementItemTitle}>{announcement.title}</Text>
+                  <Text style={styles.announcementMessage}>{announcement.message}</Text>
+                  <Text style={styles.announcementMeta}>{announcement.createdByUsername} · {formatAnnouncementDate(announcement.createdAt)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.announcementDismiss} onPress={() => markAnnouncementRead.mutate(announcement.id)} disabled={markAnnouncementRead.isPending}>
+                  <Text style={styles.announcementDismissText}>Dismiss</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         {activityItems.length > 0 ? (
           <ActivityPanel items={activityItems} onOpen={(competitionId) => router.push(`/competitions/${competitionId}`)} onDismiss={dismissActivity} />
@@ -920,6 +983,19 @@ const styles = StyleSheet.create({
   webMetricLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.2 },
   webMetricValue: { marginTop: 4, color: '#ffffff', fontSize: 20, fontWeight: '900' },
   webControlsCard: { borderWidth: 1, borderColor: '#ffffff1a', borderRadius: 22, backgroundColor: '#111827cc', padding: 12, gap: 12, shadowColor: '#020617', shadowOpacity: 0.32, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 3 },
+  announcementPanel: { borderWidth: 1, borderColor: '#f59e0b44', borderRadius: 22, backgroundColor: '#78350f20', padding: 12, gap: 9 },
+  announcementHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  announcementEyebrow: { color: '#fcd34d', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.3 },
+  announcementTitle: { color: '#f8fafc', fontSize: 17, fontWeight: '900', marginTop: 2 },
+  announcementBadge: { color: '#fde68a', borderWidth: 1, borderColor: '#f59e0b44', backgroundColor: '#f59e0b18', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4, fontSize: 10, fontWeight: '900' },
+  announcementCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderWidth: 1, borderColor: '#ffffff14', backgroundColor: '#02061755', borderRadius: 15, padding: 10 },
+  announcementMain: { flex: 1, minWidth: 0 },
+  announcementCompetition: { color: '#fde68a', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.1 },
+  announcementItemTitle: { color: '#ffffff', fontSize: 13, fontWeight: '900', marginTop: 4 },
+  announcementMessage: { color: '#cbd5e1', fontSize: 11.5, lineHeight: 16, marginTop: 4 },
+  announcementMeta: { color: '#64748b', fontSize: 9.5, marginTop: 7 },
+  announcementDismiss: { borderWidth: 1, borderColor: '#ffffff18', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+  announcementDismissText: { color: '#cbd5e1', fontSize: 9.5, fontWeight: '900' },
   activityPanel: { borderWidth: 1, borderColor: '#38bdf833', borderRadius: 22, backgroundColor: '#0f172acc', padding: 12, gap: 10, shadowColor: '#020617', shadowOpacity: 0.26, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
   activityHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   activityEyebrow: { color: '#7dd3fc', fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },

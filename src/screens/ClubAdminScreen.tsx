@@ -125,6 +125,9 @@ export default function ClubAdminScreen() {
   const [stripeOpen, setStripeOpen] = useState(false);
   const stripeOnboardingPendingRef = useRef(false);
   const [showCompetitionModal, setShowCompetitionModal] = useState(false);
+  const [announcingCompetition, setAnnouncingCompetition] = useState<Competition | null>(null);
+  const [announcementTitle, setAnnouncementTitle] = useState('');
+  const [announcementMessage, setAnnouncementMessage] = useState('');
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -350,6 +353,21 @@ export default function ClubAdminScreen() {
       await queryClient.invalidateQueries({ queryKey: ['club-admin', 'competitions'] });
     },
     onError: (e: any) => setOpStatus({ tone: 'error', message: getApiMessage(e, 'Failed to delete competition.') }),
+  });
+
+  const announcementMutation = useMutation({
+    mutationFn: async () => api.post(`/club-admin/competitions/${announcingCompetition?.id}/announcements`, {
+      title: announcementTitle.trim(),
+      message: announcementMessage.trim(),
+    }),
+    onSuccess: async () => {
+      setOpStatus({ tone: 'success', message: `Announcement sent to ${announcingCompetition?.name ?? 'competition'} participants.` });
+      setAnnouncingCompetition(null);
+      setAnnouncementTitle('');
+      setAnnouncementMessage('');
+      await queryClient.invalidateQueries({ queryKey: ['announcements'] });
+    },
+    onError: (error: any) => setOpStatus({ tone: 'error', message: getApiMessage(error, 'Could not send announcement.') }),
   });
 
   const markPaidMutation = useMutation({
@@ -733,6 +751,9 @@ export default function ClubAdminScreen() {
                     setExpandedParticipantIds(new Set());
                     setShowAddPanel(false);
                   }}><Text style={styles.dropdownBtnText}>{managing ? 'Participants ▲' : 'Participants ▼'}</Text></TouchableOpacity>
+                    <TouchableOpacity style={[styles.webActionBtn, styles.announceCompBtn]} onPress={() => { setAnnouncingCompetition(c); setAnnouncementTitle(''); setAnnouncementMessage(''); }}>
+                      <Text style={styles.announceCompBtnText}>Announce</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity style={[styles.webActionBtn, styles.deleteCompBtn, deletingThisCompetition ? styles.actionBtnDisabled : null]} onPress={() => setConfirmDialog({ title: `Delete ${c.name}?`, message: 'This will permanently delete this competition and related competition data.', items: ['Participants, picks, payments, and gameweek data may be removed.', 'This action cannot be undone.'], confirmText: 'Delete Competition', onConfirm: () => deleteCompetitionMutation.mutateAsync(c.id) })} disabled={deletingThisCompetition}>
                       <Text style={styles.deleteCompBtnText}>{deletingThisCompetition ? 'Deleting...' : 'Delete'}</Text>
                     </TouchableOpacity>
@@ -891,6 +912,34 @@ export default function ClubAdminScreen() {
           })}
           {filteredCompetitions.length === 0 ? <MetaText>No competitions match your filters</MetaText> : null}
         </Card>
+
+        <Modal visible={announcingCompetition !== null} animationType="slide" transparent onRequestClose={() => setAnnouncingCompetition(null)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalTitle}>Competition Announcement</Text>
+                  <Text style={styles.modalSubtitle}>Message {announcingCompetition?.name}. This is saved in participants' inboxes and sent by push when enabled.</Text>
+                </View>
+                <TouchableOpacity style={styles.modalCloseButton} onPress={() => setAnnouncingCompetition(null)}><Text style={styles.modalCloseText}>X</Text></TouchableOpacity>
+              </View>
+              <View style={styles.modalSection}>
+                <Text style={styles.fieldLabel}>Title</Text>
+                <TextInput value={announcementTitle} onChangeText={setAnnouncementTitle} maxLength={120} placeholder="Fixture update" placeholderTextColor={colors.textMuted} style={styles.modalInput} />
+                <Text style={styles.announcementCount}>{announcementTitle.length}/120</Text>
+                <Text style={styles.fieldLabel}>Message</Text>
+                <TextInput value={announcementMessage} onChangeText={setAnnouncementMessage} maxLength={2000} placeholder="Tell participants what they need to know..." placeholderTextColor={colors.textMuted} style={[styles.modalInput, styles.announcementMessageInput]} multiline />
+                <Text style={styles.announcementCount}>{announcementMessage.length}/2000</Text>
+              </View>
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.modalCancelButton} onPress={() => setAnnouncingCompetition(null)}><Text style={styles.modalCancelText}>Cancel</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalSaveButton, (!announcementTitle.trim() || !announcementMessage.trim()) ? styles.actionBtnDisabled : null]} onPress={() => announcementMutation.mutate()} disabled={announcementMutation.isPending || !announcementTitle.trim() || !announcementMessage.trim()}>
+                  <Text style={styles.modalSaveText}>{announcementMutation.isPending ? 'Sending...' : 'Send Announcement'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         <Modal visible={confirmDialog !== null} animationType="fade" transparent onRequestClose={() => setConfirmDialog(null)}>
           <View style={styles.confirmBackdrop}>
@@ -1353,6 +1402,8 @@ const styles = StyleSheet.create({
   optionalText: { color: '#64748b', fontWeight: '500' },
   modalInput: { backgroundColor: '#0f172a', color: colors.text, borderRadius: 12, borderWidth: 1, borderColor: '#334155', paddingHorizontal: 12, paddingVertical: 12, marginBottom: 9, fontSize: 13 },
   modalTextarea: { minHeight: 72, textAlignVertical: 'top' },
+  announcementMessageInput: { minHeight: 120, textAlignVertical: 'top' },
+  announcementCount: { color: '#64748b', fontSize: 10, textAlign: 'right', marginTop: -5, marginBottom: 9 },
   inputError: { borderColor: '#ef4444', backgroundColor: '#ef444414' },
   fieldErrorText: { color: '#fca5a5', fontSize: 11, fontWeight: '700', marginTop: -4, marginBottom: 8 },
   datePickerButton: { borderWidth: 1, borderColor: '#334155', backgroundColor: '#0f172a', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12, marginBottom: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -1434,6 +1485,8 @@ const styles = StyleSheet.create({
   dropdownBtn: { marginTop: 6, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
   compActionRow: { marginTop: 6, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   dropdownBtnInline: { borderWidth: 1, borderColor: '#26354d', backgroundColor: '#0b1324', borderRadius: 12 },
+  announceCompBtn: { borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b18' },
+  announceCompBtnText: { color: '#fde68a', fontSize: 12, fontWeight: '900' },
   deleteCompBtn: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422' },
   deleteCompBtnText: { color: '#f87171', fontSize: 12, fontWeight: '900' },
   dropdownBtnText: { color: '#bae6fd', fontWeight: '900', fontSize: 12 },
