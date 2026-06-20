@@ -37,6 +37,14 @@ type AdminFixture = {
 };
 type Gameweek = { id: number; weekNumber: number; status: string; lockAt?: string | number[]; startsAt?: string | number[]; fixtures?: AdminFixture[] };
 type FixtureResultDraft = { status: string; scoreHome: string; scoreAway: string };
+function existingFixtureDrafts(gameweek?: Gameweek | null): Record<number, FixtureResultDraft> {
+  if (!gameweek || gameweek.status !== 'COMPLETED') return {};
+  return Object.fromEntries((gameweek.fixtures ?? []).map((fixture) => [fixture.id, {
+    status: fixture.status || 'FINISHED',
+    scoreHome: fixture.scoreHome == null ? '' : String(fixture.scoreHome),
+    scoreAway: fixture.scoreAway == null ? '' : String(fixture.scoreAway),
+  }]));
+}
 type AuditLog = { id?: number; username?: string | null; entityType?: string; entityId?: number | null; fieldName?: string | null; oldValue?: string | null; newValue?: string | null; action?: string; createdAt?: string | number[] | null };
 type OpStatus = { tone: 'success' | 'error' | 'info'; message: string } | null;
 type CompetitionFormErrors = { name?: string; startDate?: string };
@@ -563,11 +571,18 @@ export default function AdminScreen() {
           scoreHome: result.scoreHome ? Number(result.scoreHome) : null,
           scoreAway: result.scoreAway ? Number(result.scoreAway) : null,
         }]));
-      return api.post(`/admin/competitions/${selectedCompId}/gameweeks/${selectedGwId}/simulate`, { fixtures, skipAutoComplete });
+      const gameweek = (gameweeksQuery.data ?? []).find((item) => item.id === selectedGwId);
+      const endpoint = gameweek?.status === 'COMPLETED' ? 'correct' : 'simulate';
+      return api.post(`/admin/competitions/${selectedCompId}/gameweeks/${selectedGwId}/${endpoint}`, { fixtures, skipAutoComplete });
     },
     onSuccess: async () => {
       setFixtureResults({});
-      setOpStatus({ tone: 'success', message: 'Simulation started. Refresh after processing completes.' });
+      setOpStatus({
+        tone: 'success',
+        message: isCorrectionMode
+          ? 'Corrected result saved and participant outcomes recalculated.'
+          : 'Simulation started. Refresh after processing completes.',
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['admin', 'gameweeks', selectedCompId] }),
         queryClient.invalidateQueries({ queryKey: ['admin', 'competitions'] }),
@@ -575,7 +590,10 @@ export default function AdminScreen() {
         queryClient.invalidateQueries({ queryKey: ['competitions-my-details'] }),
       ]);
     },
-    onError: (err: any) => setOpStatus({ tone: 'error', message: getApiMessage(err, 'Simulation failed.') }),
+    onError: (err: any) => setOpStatus({
+      tone: 'error',
+      message: getApiMessage(err, isCorrectionMode ? 'Correction failed.' : 'Simulation failed.'),
+    }),
   });
 
   const bulkSimulateResult = useMutation({
@@ -626,6 +644,7 @@ export default function AdminScreen() {
   const selectedCompetition = useMemo(() => (competitionsQuery.data ?? []).find((c) => c.id === selectedCompId) ?? null, [competitionsQuery.data, selectedCompId]);
   const selectedTestDataCompetition = useMemo(() => (competitionsQuery.data ?? []).find((c) => c.id === testDataCompetitionId) ?? null, [competitionsQuery.data, testDataCompetitionId]);
   const selectedGameweek = useMemo(() => (gameweeksQuery.data ?? []).find((gw) => gw.id === selectedGwId) ?? null, [gameweeksQuery.data, selectedGwId]);
+  const isCorrectionMode = selectedGameweek?.status === 'COMPLETED';
   const hasFixtureResults = Object.values(fixtureResults).some((result) => result.status || result.scoreHome || result.scoreAway);
 
   const auditLogs = auditQuery.data?.content ?? [];
@@ -1122,11 +1141,11 @@ export default function AdminScreen() {
 
         {tab === 'simulate' && (
           <View style={styles.simulateRoot}>
-            {(simulateResult.isPending || bulkSimulateResult.isPending) ? <AdminActionNotice tone="info" title="Processing simulation" message={activeOperation?.message ?? 'Processing gameweek results...'} busy /> : null}
+            {(simulateResult.isPending || bulkSimulateResult.isPending) ? <AdminActionNotice tone="info" title={isCorrectionMode ? 'Applying correction' : 'Processing simulation'} message={activeOperation?.message ?? (isCorrectionMode ? 'Recalculating gameweek outcomes...' : 'Processing gameweek results...')} busy /> : null}
             <View style={styles.simulateIntro}>
               <Text style={styles.sectionEyebrow}>Scenario testing</Text>
-              <Text style={styles.sectionHeading}>Simulate Gameweek Results</Text>
-              <Text style={styles.sectionDescription}>Stress-test eliminations, byes, and downstream status changes before real match results arrive.</Text>
+              <Text style={styles.sectionHeading}>Manage Gameweek Results</Text>
+              <Text style={styles.sectionDescription}>Simulate unresolved rounds or correct provider scores for the latest completed gameweek.</Text>
             </View>
 
             <View style={styles.simulateDensityBar}>
@@ -1175,7 +1194,7 @@ export default function AdminScreen() {
                     </TouchableOpacity>
                     {simulateGameweekDropdownOpen ? (
                       <View style={styles.simulateDropdownMenu}>{(gameweeksQuery.data ?? []).map((gw) => (
-                        <TouchableOpacity key={gw.id} style={[styles.simulateDropdownItem, selectedGwId === gw.id ? styles.simulateDropdownItemActive : null]} onPress={() => { setSelectedGwId(gw.id); setFixtureResults({}); setSimulateGameweekDropdownOpen(false); }}>
+                        <TouchableOpacity key={gw.id} style={[styles.simulateDropdownItem, selectedGwId === gw.id ? styles.simulateDropdownItemActive : null]} onPress={() => { setSelectedGwId(gw.id); setFixtureResults(existingFixtureDrafts(gw)); setSimulateGameweekDropdownOpen(false); }}>
                           <Text style={styles.simulateSelectTitle}>GW{gw.weekNumber} - {gw.status}</Text>
                           <Text style={styles.simulateSelectMeta}>{(gw.fixtures ?? []).length} fixtures - Locks: {formatAdminDate(gw.lockAt)}</Text>
                         </TouchableOpacity>
@@ -1189,14 +1208,25 @@ export default function AdminScreen() {
             {selectedGameweek ? (
               <View style={styles.simulateStepCard}>
                 <View style={styles.simulateFixtureHeader}>
-                  <Text style={styles.simulateStepTitle}>3. Set Fixture Results for GW{selectedGameweek.weekNumber}</Text>
+                  <Text style={styles.simulateStepTitle}>3. {isCorrectionMode ? 'Correct' : 'Set'} Fixture Results for GW{selectedGameweek.weekNumber}</Text>
                   <StatusPill text={selectedGameweek.status} tone={selectedGameweek.status === 'COMPLETED' ? 'success' : selectedGameweek.status === 'LOCKED' ? 'brand' : 'warn'} />
                 </View>
                 <View style={styles.simulateBulkActions}>
-                  <TouchableOpacity style={styles.simulateSecondaryBtn} onPress={randomiseAllFixtures}><Text style={styles.simulateSecondaryText}>Randomise All</Text></TouchableOpacity>
-                  <TouchableOpacity style={styles.simulatePrimaryBtn} onPress={() => bulkSimulateResult.mutate()} disabled={bulkSimulateResult.isPending}><Text style={styles.simulatePrimaryText}>{bulkSimulateResult.isPending ? 'Processing...' : 'Randomise & Process All'}</Text></TouchableOpacity>
-                  <TouchableOpacity style={styles.simulateGhostBtn} onPress={() => setFixtureResults({})}><Text style={styles.simulateGhostText}>Clear All</Text></TouchableOpacity>
+                  {!isCorrectionMode ? (
+                    <>
+                      <TouchableOpacity style={styles.simulateSecondaryBtn} onPress={randomiseAllFixtures}><Text style={styles.simulateSecondaryText}>Randomise All</Text></TouchableOpacity>
+                      <TouchableOpacity style={styles.simulatePrimaryBtn} onPress={() => bulkSimulateResult.mutate()} disabled={bulkSimulateResult.isPending}><Text style={styles.simulatePrimaryText}>{bulkSimulateResult.isPending ? 'Processing...' : 'Randomise & Process All'}</Text></TouchableOpacity>
+                    </>
+                  ) : null}
+                  <TouchableOpacity style={styles.simulateGhostBtn} onPress={() => setFixtureResults(isCorrectionMode ? existingFixtureDrafts(selectedGameweek) : {})}><Text style={styles.simulateGhostText}>{isCorrectionMode ? 'Reset Changes' : 'Clear All'}</Text></TouchableOpacity>
                 </View>
+
+                {isCorrectionMode ? (
+                  <View style={styles.simulateWarningPanel}>
+                    <Text style={styles.simulateWarningTitle}>Correct completed result</Text>
+                    <Text style={styles.simulateWarningText}>This recalculates picks, eliminations, winner and lifeline usage. It is allowed only before a later gameweek starts.</Text>
+                  </View>
+                ) : null}
 
                 {(selectedGameweek.fixtures ?? []).length === 0 ? <MetaText>No fixtures in this gameweek.</MetaText> : null}
                 {(selectedGameweek.fixtures ?? []).map((fixture) => {
@@ -1239,20 +1269,22 @@ export default function AdminScreen() {
 
                 {(selectedGameweek.fixtures ?? []).length > 0 ? (
                   <View style={styles.simulateSubmitArea}>
-                    {selectedCompetition && (selectedCompetition.participantCount ?? 0) > 1 ? (
+                    {!isCorrectionMode && selectedCompetition && (selectedCompetition.participantCount ?? 0) > 1 ? (
                       <View style={styles.simulateWarningPanel}>
                         <Text style={styles.simulateWarningTitle}>Auto-Completion Behavior</Text>
                         <Text style={styles.simulateWarningText}>Competitions automatically end when only 1 participant remains or all are eliminated. Current participants: {selectedCompetition.participantCount}{selectedCompetition.activeCount !== selectedCompetition.participantCount ? ` (${selectedCompetition.activeCount} active)` : ''}.</Text>
                       </View>
                     ) : null}
-                    <TouchableOpacity style={styles.simulateCheckboxRow} onPress={() => setSkipAutoComplete((value) => !value)}>
-                      <View style={[styles.simulateCheckbox, skipAutoComplete ? styles.simulateCheckboxActive : null]}><Text style={styles.simulateCheckboxMark}>{skipAutoComplete ? 'x' : ''}</Text></View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.simulateCheckboxTitle}>Skip auto-complete</Text>
-                        <Text style={styles.simulateCheckboxHelp}>Use this to test multiple gameweeks in sequence.</Text>
-                      </View>
-                    </TouchableOpacity>
-                    <PrimaryButton label={simulateResult.isPending ? 'Processing...' : 'Process Results & Eliminate Participants'} onPress={() => simulateResult.mutate()} disabled={simulateResult.isPending || !hasFixtureResults} />
+                    {!isCorrectionMode ? (
+                      <TouchableOpacity style={styles.simulateCheckboxRow} onPress={() => setSkipAutoComplete((value) => !value)}>
+                        <View style={[styles.simulateCheckbox, skipAutoComplete ? styles.simulateCheckboxActive : null]}><Text style={styles.simulateCheckboxMark}>{skipAutoComplete ? 'x' : ''}</Text></View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.simulateCheckboxTitle}>Skip auto-complete</Text>
+                          <Text style={styles.simulateCheckboxHelp}>Use this to test multiple gameweeks in sequence.</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ) : null}
+                    <PrimaryButton label={simulateResult.isPending ? 'Processing...' : isCorrectionMode ? 'Save Correction & Reprocess' : 'Process Results & Eliminate Participants'} onPress={() => simulateResult.mutate()} disabled={simulateResult.isPending || !hasFixtureResults} />
                     {!hasFixtureResults ? <Text style={styles.simulateNeedResult}>Set at least one fixture result to continue</Text> : null}
                   </View>
                 ) : null}

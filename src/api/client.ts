@@ -6,6 +6,11 @@ type RefreshResponse = {
   refreshToken: string;
 };
 
+type CachedGetResponse = {
+  etag: string;
+  data: unknown;
+};
+
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://10.0.2.2:8080';
 
 export function getApiErrorMessage(error: any, fallback = 'Request failed'): string {
@@ -17,7 +22,9 @@ export function getApiErrorMessage(error: any, fallback = 'Request failed'): str
   }
   return error.response?.data?.message || error.response?.data?.error || fallback;
 }
+
 let onAuthFailure: (() => void) | null = null;
+const conditionalGetCache = new Map<string, CachedGetResponse>();
 
 export function setAuthFailureHandler(handler: (() => void) | null) {
   onAuthFailure = handler;
@@ -31,11 +38,22 @@ export const api = axios.create({
   },
 });
 
+function conditionalCacheKey(config: any): string | null {
+  if (String(config?.method ?? 'get').toLowerCase() !== 'get' || !config?.url) return null;
+  const params = config.params ? JSON.stringify(config.params) : '';
+  return `${config.baseURL ?? ''}${config.url}?${params}`;
+}
+
 api.interceptors.request.use(async (config) => {
   const token = await getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  const cacheKey = conditionalCacheKey(config);
+  const cached = cacheKey ? conditionalGetCache.get(cacheKey) : null;
+  if (cached) config.headers['If-None-Match'] = cached.etag;
+  (config as any)._conditionalCacheKey = cacheKey;
   return config;
 });
 
@@ -57,16 +75,42 @@ async function refreshAccessToken(): Promise<string | null> {
     return response.data.accessToken;
   } catch {
     await clearTokens();
+    conditionalGetCache.clear();
     onAuthFailure?.();
     return null;
   }
 }
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const cacheKey = (response.config as any)._conditionalCacheKey as string | null;
+    const etag = response.headers?.etag as string | undefined;
+    if (cacheKey && etag && response.status === 200) {
+      conditionalGetCache.delete(cacheKey);
+      conditionalGetCache.set(cacheKey, { etag, data: response.data });
+      if (conditionalGetCache.size > 250) {
+        const oldest = conditionalGetCache.keys().next().value as string | undefined;
+        if (oldest) conditionalGetCache.delete(oldest);
+      }
+    }
+    return response;
+  },
   async (error) => {
     const status = error?.response?.status;
     const original = error?.config;
+
+    if (status === 304 && original?._conditionalCacheKey) {
+      const cached = conditionalGetCache.get(original._conditionalCacheKey);
+      if (cached) {
+        return Promise.resolve({
+          ...error.response,
+          status: 200,
+          statusText: 'OK',
+          data: cached.data,
+          config: original,
+        });
+      }
+    }
 
     if (status !== 401 || !original || original._retry) {
       return Promise.reject(error);

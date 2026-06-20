@@ -231,6 +231,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id],
     queryFn: async () => (await api.get<Competition>(`/competitions/${id}`)).data,
     enabled: Number.isFinite(id),
+    staleTime: (query) => (query.state.data as Competition | undefined)?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: (query) => {
       const competition = query.state.data as Competition | undefined;
       return competition?.status === 'ACTIVE' ? 300000 : false;
@@ -241,6 +242,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'my-entries'],
     queryFn: async () => (await api.get<Participant[]>(`/competitions/${id}/my-entries`)).data ?? [],
     enabled: Number.isFinite(id),
+    staleTime: competitionQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
   });
 
   useEffect(() => {
@@ -269,6 +271,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'my-status', selectedEntryId],
     queryFn: async () => (await api.get<MyStatusResponse>(`/competitions/${id}/me`, { params: selectedEntryId ? { entryId: selectedEntryId } : undefined })).data,
     enabled: Number.isFinite(id) && joined,
+    staleTime: competitionQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: liveDetailRefetchInterval,
   });
 
@@ -346,6 +349,7 @@ export default function CompetitionDetailScreen() {
     queryKey: ['competition', id, 'current-gameweek'],
     queryFn: async () => (await api.get<GameweekResponse>(`/competitions/${id}/gameweeks/current`)).data,
     enabled: Number.isFinite(id),
+    staleTime: competitionQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: activeDetailRefetchInterval,
   });
 
@@ -355,6 +359,7 @@ export default function CompetitionDetailScreen() {
       return (await api.get<Fixture[]>(`/competitions/${id}/fixtures?weeks=99`)).data ?? [];
     },
     enabled: Number.isFinite(id),
+    staleTime: competitionQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: liveDetailRefetchInterval,
   });
 

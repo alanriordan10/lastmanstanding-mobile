@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
-import type { GameweekSelectionsData } from '../types';
+import type { Competition, GameweekSelectionsData } from '../types';
 import { Card, FilterPill, MetaText, ScreenTitle, SectionTitle, StatusPill } from '../components/ui';
 import { colors, spacing } from '../theme/tokens';
 
@@ -15,6 +15,13 @@ export default function GameweekSelectionsScreen() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'LIVE' | 'RESOLVED'>('ALL');
 
+  const compQuery = useQuery({
+    queryKey: ['competition', compId],
+    queryFn: async () => (await api.get<Competition>(`/competitions/${compId}`)).data,
+    enabled: Number.isFinite(compId),
+    staleTime: (query) => (query.state.data as Competition | undefined)?.status === 'COMPLETED' ? Infinity : 30_000,
+  });
+
   const { data, isLoading, error, isRefetching, refetch } = useQuery({
     queryKey: ['gameweek-selections', compId, gameweekId],
     queryFn: async () => {
@@ -23,6 +30,7 @@ export default function GameweekSelectionsScreen() {
       return res.data as GameweekSelectionsData;
     },
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    staleTime: compQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
   });
 
   const selections = data?.selections ?? [];

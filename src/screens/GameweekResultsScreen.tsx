@@ -54,6 +54,7 @@ export default function GameweekResultsScreen() {
     queryKey: ['competition', compId],
     queryFn: async () => (await api.get<Competition>(`/competitions/${compId}`)).data,
     enabled: Number.isFinite(compId),
+    staleTime: (query) => (query.state.data as Competition | undefined)?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: (query) => {
       const competition = query.state.data as Competition | undefined;
       return competition?.status === 'ACTIVE' ? 300000 : false;
@@ -69,6 +70,7 @@ export default function GameweekResultsScreen() {
       return res.data as GameweekSelectionsData;
     },
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    staleTime: compQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: liveResultsRefetchInterval,
   });
 
@@ -76,6 +78,7 @@ export default function GameweekResultsScreen() {
     queryKey: ['gameweek-results-fixtures', compId, gameweekId],
     queryFn: async () => (await api.get<Fixture[]>(`/competitions/${compId}/gameweeks/${gameweekId}/fixtures`)).data ?? [],
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    staleTime: compQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: liveResultsRefetchInterval,
   });
 
@@ -83,6 +86,7 @@ export default function GameweekResultsScreen() {
     queryKey: ['gameweek-results-pick-stats', compId, gameweekId],
     queryFn: async () => (await api.get<PickStat[]>(`/competitions/${compId}/gameweeks/${gameweekId}/pick-stats`)).data ?? [],
     enabled: Number.isFinite(compId) && Number.isFinite(gameweekId),
+    staleTime: compQuery.data?.status === 'COMPLETED' ? Infinity : 30_000,
     refetchInterval: liveResultsRefetchInterval,
   });
 
