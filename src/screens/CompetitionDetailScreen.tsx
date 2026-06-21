@@ -751,6 +751,7 @@ export default function CompetitionDetailScreen() {
   const survivingPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && ['WIN', 'POSTPONED'].includes(String(narrativeTeamResults.get(stat.teamId))));
   const losingPickedTeams = latestNarrativeStats.filter((stat) => stat.teamId != null && narrativeTeamResults.get(stat.teamId) === 'LOSS');
   const gwPickedCount = resolvedSelections.length;
+  const gwPendingSelectionCount = Math.max(latestSelections.length - resolvedSelections.length, 0);
   const gwAdvancedCount = resolvedSelections.filter((selection) => {
     const outcome = String(selection.outcome ?? '').toUpperCase();
     return outcome === 'ADVANCE' || outcome === 'POSTPONED_ADVANCE';
@@ -790,6 +791,11 @@ export default function CompetitionDetailScreen() {
   const eliminatedCount = effectiveEliminatedCount;
   const survivalRate = participantCount > 0 ? Math.max(Math.round((effectiveActiveCount / participantCount) * 100), effectiveActiveCount > 0 ? 1 : 0) : 0;
   const lifelinesPlayedThisWeek = latestSelections.filter((selection) => Boolean(selection.useLifeline)).length;
+  const narrativeFixtureCount = latestNarrativeWeek?.fixtures.length ?? 0;
+  const narrativeResolvedFixtureCount = latestNarrativeWeek?.fixtures.filter((fixture) =>
+    fixture.status === 'FINISHED' || fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED'
+  ).length ?? 0;
+  const narrativePendingFixtureCount = Math.max(narrativeFixtureCount - narrativeResolvedFixtureCount, 0);
   const narrativeWeekLabel = latestNarrativeWeek ? `Gameweek ${latestNarrativeWeek.weekNumber}` : null;
   const hasWinner = Boolean(competition?.status === 'COMPLETED' || ((competition?.activeCount ?? 0) === 1 && (competition?.participantCount ?? 0) > 1));
   const latestResolvedPick = pickHistory.filter((pick) => pick.outcome && pick.outcome !== 'PENDING').sort((a, b) => b.weekNumber - a.weekNumber)[0] ?? null;
@@ -894,14 +900,20 @@ export default function CompetitionDetailScreen() {
       `${biggestCasualty.teamShortName} was the pick that hurt most, and ${effectiveActiveCount} ${effectiveActiveCount === 1 ? 'entry is' : 'entries are'} still alive.`,
     ], 105);
   } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate < 50) {
-    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is chaos' : 'was chaos'}`;
-    pulseBody = `${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'player went' : 'players went'} out in the latest week. Only ${weeklySurvivalRate}% survived the round.`;
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'has early damage' : 'was chaos'}`;
+    pulseBody = narrativeWeekInProgress
+      ? `${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'entry has' : 'entries have'} been eliminated from resolved picks so far. ${narrativePendingFixtureCount} fixture${narrativePendingFixtureCount === 1 ? '' : 's'} and ${gwPendingSelectionCount} pick${gwPendingSelectionCount === 1 ? '' : 's'} remain unresolved.`
+      : `${weeklyEliminatedCount} ${weeklyEliminatedCount === 1 ? 'player went' : 'players went'} out in the latest week. Only ${weeklySurvivalRate}% survived the round.`;
   } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate >= 50 && weeklySurvivalRate <= 70) {
-    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is tightening the race' : 'tightened the race'}`;
-    pulseBody = `${weeklySurvivalRate}% survived the round, and the middle of the pack is starting to thin out.`;
+    pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is taking shape' : 'tightened the race'}`;
+    pulseBody = narrativeWeekInProgress
+      ? `${weeklyAdvancedCount} advanced and ${weeklyEliminatedCount} went out from the picks resolved so far. The remaining fixtures can still change the round.`
+      : `${weeklySurvivalRate}% survived the round, and the middle of the pack is starting to thin out.`;
   } else if (latestNarrativeWeek && weeklySurvivalRate != null && weeklySurvivalRate >= 85) {
     pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is steady so far' : 'was steady'}`;
-    pulseBody = `${weeklySurvivalRate}% made it through. The real shakeups may still be ahead.`;
+    pulseBody = narrativeWeekInProgress
+      ? `${weeklyAdvancedCount} of ${weeklyPickedCount} resolved picks have advanced so far. ${narrativePendingFixtureCount} fixture${narrativePendingFixtureCount === 1 ? '' : 's'} remain unresolved.`
+      : `${weeklySurvivalRate}% made it through. The real shakeups may still be ahead.`;
   } else if (latestNarrativeWeek && doomedPickedTeams.length === 0 && survivingPickedTeams.length > 0) {
     pulseTitle = `${narrativeWeekLabel} ${narrativeWeekInProgress ? 'is sparing the field' : 'spared the field'}`;
     pulseBody = `No picked teams lost in the latest week. The standings stayed tight with ${effectiveActiveCount} still alive.`;
@@ -1577,7 +1589,13 @@ export default function CompetitionDetailScreen() {
             <View style={styles.webPulseChips}>
               <Text style={styles.webPulseChip}>{effectiveEliminatedCount} eliminated</Text>
               <Text style={styles.webPulseChip}>{survivalRate}% survival rate</Text>
-              {weeklySurvivalRate != null ? <Text style={styles.webPulseChip}>GW survival {weeklySurvivalRate}% · {weeklyAdvancedCount} adv · {weeklyEliminatedCount} out</Text> : null}
+              {weeklySurvivalRate != null ? (
+                <Text style={styles.webPulseChip}>
+                  {narrativeWeekInProgress
+                    ? `Resolved picks: ${weeklySurvivalRate}% advanced · ${weeklyAdvancedCount} adv · ${weeklyEliminatedCount} out${gwPendingSelectionCount > 0 ? ` · ${gwPendingSelectionCount} pending` : ''} · ${narrativePendingFixtureCount} fixtures to play`
+                    : `GW survival ${weeklySurvivalRate}% · ${weeklyAdvancedCount} adv · ${weeklyEliminatedCount} out`}
+                </Text>
+              ) : null}
               {mostBackedTeam ? <Text style={styles.webPulseChip}>Crowd pick: {mostBackedTeam.teamShortName} ({mostBackedTeam.pickCount})</Text> : null}
             </View>
               </>
