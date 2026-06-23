@@ -283,7 +283,7 @@ export default function SurvivorTableScreen() {
                 {gameweeks.map((gw) => (
                   <View key={gw.weekNumber} style={styles.gwHeaderCell}>
                     <Text style={styles.headerText}>GW{gw.weekNumber}</Text>
-                    <Text style={[styles.gwStatusText, gw.status === 'COMPLETED' ? styles.gwComplete : gw.status === 'IN_PROGRESS' ? styles.gwLive : gw.status === 'LOCKED' ? styles.gwLocked : styles.gwUpcoming]}>{gw.status}</Text>
+                    <Text style={[styles.gwStatusText, gw.status === 'VOIDED' ? styles.gwLocked : gw.status === 'COMPLETED' ? styles.gwComplete : gw.status === 'IN_PROGRESS' ? styles.gwLive : gw.status === 'LOCKED' ? styles.gwLocked : styles.gwUpcoming]}>{gw.status}</Text>
                   </View>
                 ))}
               </View>
@@ -311,6 +311,9 @@ export default function SurvivorTableScreen() {
                       return <View key={gw.weekNumber} style={styles.gwCell}><Text style={styles.lockIcon}>🔒</Text></View>;
                     }
                     if (!pick) {
+                      if (gw.status === 'VOIDED') {
+                        return <View key={gw.weekNumber} style={styles.gwCell}><Text style={styles.gwLocked}>void</Text></View>;
+                      }
                       const eliminatedBefore = row.eliminatedWeek != null && gw.weekNumber > row.eliminatedWeek;
                       return <View key={gw.weekNumber} style={styles.gwCell}><Text style={styles.noPickText}>{eliminatedBefore ? '—' : 'no pick'}</Text></View>;
                     }

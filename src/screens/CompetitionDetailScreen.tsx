@@ -1,11 +1,11 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { AppState, Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, Image, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import ViewShot from 'react-native-view-shot';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api/client';
-import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickResponse } from '../types';
+import type { Competition, Fixture, GameweekResponse, GameweekSelectionsData, MyStatusResponse, Participant, PickHistoryItem, PickResponse } from '../types';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, MetaText, PrimaryButton, SectionTitle, StatusPill } from '../components/ui';
 import { DataFreshnessBar } from '../components/DataFreshnessBar';
@@ -264,8 +264,8 @@ export default function CompetitionDetailScreen() {
   const cachedCurrentGameweek = queryClient.getQueryData<GameweekResponse>(['competition', id, 'current-gameweek']);
   const liveDetailRefetchInterval = cachedCurrentGameweek?.status === 'IN_PROGRESS' ? 300000 : false;
   const maxEntriesPerUser = Math.max(1, Number(competitionQuery.data?.maxEntriesPerUser ?? 1));
-  const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !joined);
-  const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
+  const canJoinCompetition = Boolean(competitionQuery.data?.status === 'UPCOMING' && !competitionQuery.data?.paused && !joined);
+  const canAddAnotherEntry = Boolean(competitionQuery.data?.status === 'UPCOMING' && !competitionQuery.data?.paused && joined && (myEntriesQuery.data?.length ?? 0) < maxEntriesPerUser);
 
   const myStatusQuery = useQuery({
     queryKey: ['competition', id, 'my-status', selectedEntryId],
@@ -472,7 +472,7 @@ export default function CompetitionDetailScreen() {
   const awaitingOnlinePayment = Boolean(awaitingPayment && competition?.paymentMode === 'STRIPE');
   const strictManualPayment = competition?.paymentMode === 'MANUAL' && competition?.manualPaymentPolicy !== 'LENIENT';
   const paymentBlocksPicks = awaitingOnlinePayment || (awaitingPayment && strictManualPayment);
-  const canPick = Boolean(joined && currentGameweek?.status === 'UPCOMING' && !paymentBlocksPicks && selectedEntry?.status === 'ACTIVE');
+  const canPick = Boolean(joined && !competition?.paused && currentGameweek?.status === 'UPCOMING' && !paymentBlocksPicks && selectedEntry?.status === 'ACTIVE');
   const participantCount = competition?.participantCount ?? 0;
 
   const pickHistory = (myStatusQuery.data?.picks ?? []).slice().sort((a, b) => b.weekNumber - a.weekNumber);
@@ -482,6 +482,10 @@ export default function CompetitionDetailScreen() {
     return map;
   }, [myStatusQuery.data?.picks]);
   const handlePick = (pick: { gwId: number; teamId: number; teamName: string; teamShortName: string; useLifeline: boolean }) => {
+    if (competition?.paused) {
+      Alert.alert('Competition paused', competition.pauseReason ?? 'Picks will reopen when the club admin resumes the competition.');
+      return;
+    }
     if (pickMutation.isPending) return;
     const currentPick = myPickByGameweek.get(pick.gwId);
     if (currentPick?.teamId === pick.teamId && Boolean(currentPick.useLifeline) === pick.useLifeline) return;
@@ -501,9 +505,9 @@ export default function CompetitionDetailScreen() {
           : 'Lifeline available';
 
   const gameweeks = useMemo(() => {
-    const map = new Map<number, { weekNumber: number; gameweekId: number; gameweekStatus: string; lockAt: string; fixtures: Fixture[] }>();
+    const map = new Map<number, { weekNumber: number; gameweekId: number; gameweekStatus: string; gameweekVoided?: boolean; gameweekVoidReason?: string | null; lockAt: string; fixtures: Fixture[] }>();
     for (const fixture of fixtures ?? []) {
-      const fx = fixture as Fixture & { gameweekStatus?: string; gameweekLockAt?: string };
+      const fx = fixture as Fixture & { gameweekStatus?: string; gameweekLockAt?: string; gameweekVoided?: boolean; gameweekVoidReason?: string | null };
       const existing = map.get(fixture.weekNumber);
       if (existing) {
         existing.fixtures.push(fixture);
@@ -514,6 +518,8 @@ export default function CompetitionDetailScreen() {
           weekNumber: fixture.weekNumber,
           gameweekId: fixture.gameweekId,
           gameweekStatus: fx.gameweekStatus ?? 'UPCOMING',
+          gameweekVoided: fx.gameweekVoided,
+          gameweekVoidReason: fx.gameweekVoidReason,
           lockAt: fx.gameweekLockAt ?? '',
           fixtures: [fixture],
         });
@@ -705,7 +711,7 @@ export default function CompetitionDetailScreen() {
   const latestNarrativeSelectionsLoading = latestSelectionsIndex >= 0
     && (latestSelectionsQuery?.data === undefined || Boolean(latestSelectionsQuery?.isFetching));
 
-  const latestNarrativeStatsAll = latestNarrativeWeek
+  const latestNarrativeStatsAll = latestNarrativeWeek && !latestNarrativeWeek.gameweekVoided
     ? [...(pickStatsByGameweek.get(latestNarrativeWeek.gameweekId)?.values() ?? [])]
         .filter((stat, index, arr) => stat.teamId != null && latestNarrativeTeamIds.has(stat.teamId) && arr.findIndex((other) => other.teamId === stat.teamId) === index)
         .sort((a, b) => b.pickCount - a.pickCount)
@@ -716,7 +722,7 @@ export default function CompetitionDetailScreen() {
   const resolvedSelections = latestSelections.filter((selection) => String(selection.outcome ?? '').toUpperCase() !== 'PENDING');
   const narrativeTeamResults = useMemo(() => {
     const results = new Map<number, 'WIN' | 'LOSS' | 'DRAW' | 'POSTPONED'>();
-    if (!latestNarrativeWeek) return results;
+    if (!latestNarrativeWeek || latestNarrativeWeek.gameweekVoided) return results;
     latestNarrativeWeek.fixtures.forEach((fixture) => {
       if (fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED') {
         results.set(fixture.homeTeamId, 'POSTPONED');
@@ -738,6 +744,7 @@ export default function CompetitionDetailScreen() {
     return results;
   }, [latestNarrativeWeek]);
   const narrativeWeekInProgress = latestNarrativeWeek?.gameweekStatus === 'IN_PROGRESS';
+  const narrativeWeekVoided = Boolean(latestNarrativeWeek?.gameweekVoided);
   const latestNarrativeStats = narrativeWeekInProgress
     ? latestNarrativeStatsAll.filter((stat) => stat.teamId != null && narrativeTeamResults.has(stat.teamId))
     : latestNarrativeStatsAll;
@@ -770,27 +777,33 @@ export default function CompetitionDetailScreen() {
   const totalResolvedPicks = latestNarrativeStats.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
   const survivingResolvedPicks = survivingPickedTeams.reduce((sum, stat) => sum + (stat.pickCount ?? 0), 0);
   const computedWeeklySurvivalRate = totalResolvedPicks > 0 ? Math.round((survivingResolvedPicks / totalResolvedPicks) * 100) : null;
-  const weeklySurvivalRate = narrativeWeekInProgress
+  let weeklySurvivalRate = narrativeWeekInProgress
     ? (gwSurvivalFromSelections ?? computedWeeklySurvivalRate)
     : (gwSurvivalFromBackend ?? gwSurvivalFromSelections ?? computedWeeklySurvivalRate);
-  const weeklyPickedCount = narrativeWeekInProgress
+  let weeklyPickedCount = narrativeWeekInProgress
     ? (gwPickedCount || totalResolvedPicks || 0)
     : (gwActiveAtStart ?? (gwPickedCount || totalResolvedPicks || 0));
-  const weeklyAdvancedCount = narrativeWeekInProgress
+  let weeklyAdvancedCount = narrativeWeekInProgress
     ? (gwAdvancedCount || survivingResolvedPicks || 0)
     : (gwAdvancedThisWeek ?? (gwAdvancedCount || survivingResolvedPicks || 0));
-  const weeklyEliminatedCount = narrativeWeekInProgress
+  let weeklyEliminatedCount = narrativeWeekInProgress
     ? gwEliminatedFromSelections
     : (gwEliminatedThisWeek ?? (weeklyPickedCount > 0 ? Math.max(weeklyPickedCount - weeklyAdvancedCount, 0) : 0));
-  const biggestCasualty = weeklyEliminatedCount > 0 ? losingPickedTeam : null;
-  const doomedPickedTeams = weeklyEliminatedCount > 0 ? losingPickedTeams : [];
+  if (narrativeWeekVoided) {
+    weeklyPickedCount = gwActiveAtStart ?? (competition?.activeCount ?? 0);
+    weeklyAdvancedCount = weeklyPickedCount;
+    weeklyEliminatedCount = 0;
+    weeklySurvivalRate = weeklyPickedCount > 0 ? 100 : null;
+  }
+  const biggestCasualty = narrativeWeekVoided ? null : weeklyEliminatedCount > 0 ? losingPickedTeam : null;
+  const doomedPickedTeams = narrativeWeekVoided ? [] : weeklyEliminatedCount > 0 ? losingPickedTeams : [];
   const baseEliminatedCount = Math.max(participantCount - (competition?.activeCount ?? 0), 0);
   const liveWeekExtraEliminations = narrativeWeekInProgress ? gwEliminatedFromSelections : 0;
   const effectiveEliminatedCount = Math.min(baseEliminatedCount + liveWeekExtraEliminations, participantCount);
   const effectiveActiveCount = Math.max(participantCount - effectiveEliminatedCount, 0);
   const eliminatedCount = effectiveEliminatedCount;
   const survivalRate = participantCount > 0 ? Math.max(Math.round((effectiveActiveCount / participantCount) * 100), effectiveActiveCount > 0 ? 1 : 0) : 0;
-  const lifelinesPlayedThisWeek = latestSelections.filter((selection) => Boolean(selection.useLifeline)).length;
+  const lifelinesPlayedThisWeek = narrativeWeekVoided ? 0 : latestSelections.filter((selection) => Boolean(selection.useLifeline)).length;
   const narrativeFixtureCount = latestNarrativeWeek?.fixtures.length ?? 0;
   const narrativeResolvedFixtureCount = latestNarrativeWeek?.fixtures.filter((fixture) =>
     fixture.status === 'FINISHED' || fixture.status === 'POSTPONED' || fixture.status === 'CANCELLED'
@@ -824,7 +837,11 @@ export default function CompetitionDetailScreen() {
         'From the next pick onward, small calls start creating real separation.',
       ], 103);
 
-  if (hasWinner) {
+  if (narrativeWeekVoided && latestNarrativeWeek) {
+    pulseTitle = `Gameweek ${latestNarrativeWeek.weekNumber} was voided`;
+    pulseBody = latestNarrativeWeek.gameweekVoidReason
+      ?? 'The competition was paused when this gameweek locked. No results were applied, nobody was eliminated, and all active entries move on.';
+  } else if (hasWinner) {
     const winnerName = competition?.winnerUsername ?? (isWinner ? 'You' : 'One player');
     pulseTitle = isWinner ? 'You won this competition' : 'We have a winner';
     pulseBody = `${winnerName} is the last survivor standing${latestNarrativeWeek ? ` after Gameweek ${latestNarrativeWeek.weekNumber}` : ''}. Every round survived, every pick paid off.`;
@@ -1294,6 +1311,7 @@ export default function CompetitionDetailScreen() {
 
 
   const actionSummary = (() => {
+    if (competition?.paused) return { title: 'Competition paused', detail: competition.pauseReason ?? 'Joining, payments, and picks will reopen when the club admin resumes the competition.', tone: 'warn' as const };
     if (!joined) {
       if (competition?.status === 'UPCOMING' && onlinePaymentRequired) return { title: 'Online payment required', detail: `Pay securely online to enter this competition. Entry fee: €${competition.entryFee}.`, tone: 'brand' as const };
       if (competition?.status === 'UPCOMING') return { title: 'Join this competition', detail: 'Create your entry to start making picks.', tone: 'brand' as const };
@@ -1537,6 +1555,7 @@ export default function CompetitionDetailScreen() {
 
           <View style={styles.heroPillsRow}>
             <StatusPill text={competition?.status ?? '—'} tone={statusTone(competition?.status)} />
+            {competition?.paused ? <StatusPill text="Paused" tone="warn" /> : null}
             {selectedEntryLabel ? <StatusPill text={selectedEntryLabel} tone="neutral" /> : null}
             {isEliminated ? <StatusPill text="Eliminated" tone="danger" /> : null}
             {isWinner ? <StatusPill text="Winner" tone="warn" /> : null}
@@ -1567,6 +1586,14 @@ export default function CompetitionDetailScreen() {
               <Text style={[styles.survivorBtnText, { color: clubPrimaryColor }]}>Survivor Table</Text>
             </TouchableOpacity>
           </View>
+
+          {competition?.paused ? (
+            <View style={styles.pauseBanner}>
+              <Text style={styles.pauseBannerTitle}>Competition paused</Text>
+              <Text style={styles.pauseBannerBody}>{competition.pauseReason ?? 'The club admin has temporarily paused this competition.'}</Text>
+              <Text style={styles.pauseBannerMeta}>Joining, payments, picks, reminders, and automatic processing are paused. Fixture kickoff and gameweek lock times remain unchanged.</Text>
+            </View>
+          ) : null}
 
           <View style={[styles.pulsePanel, { borderLeftColor: clubPrimaryColor, backgroundColor: `${clubSecondaryColor}10` }]}>
             {detailFirstLoad ? (
@@ -1696,8 +1723,8 @@ export default function CompetitionDetailScreen() {
             : joined
             ? 'Add another entry'
             : 'Join competition'}
-          showAction={canJoinCompetition || canAddAnotherEntry || awaitingOnlinePayment}
-          actionDisabled={paymentInProgress || joinMutation.isPending}
+          showAction={!competition?.paused && (canJoinCompetition || canAddAnotherEntry || awaitingOnlinePayment)}
+          actionDisabled={Boolean(competition?.paused) || paymentInProgress || joinMutation.isPending}
           onAction={handleEntryAction}
           actionError={paymentActionError}
           actionSuccess={paymentActionSuccess}
@@ -1769,7 +1796,7 @@ export default function CompetitionDetailScreen() {
             const myPickForGw = optimisticPickForGw ?? displaySavedPickForGw;
             const lifelineChecked = pendingLifelineGameweekId === gw.gameweekId;
             const lifelineSelectedElsewhere = Boolean(pendingLifelineGameweekId && pendingLifelineGameweekId !== gw.gameweekId);
-            const lifelineDisabled = isEliminated || isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
+            const lifelineDisabled = Boolean(competition?.paused) || Boolean(gw.gameweekVoided) || isCompleted || isEliminated || isLocked || gw.gameweekStatus !== 'UPCOMING' || Boolean(participant?.lifelineUsed) || lifelineSelectedElsewhere;
             const fixtureCount = gw.fixtures.length;
             const resolvedFixtureCount = gw.fixtures.filter((f) => f.status === 'FINISHED' || f.status === 'POSTPONED' || f.status === 'CANCELLED').length;
             const routeMode = gameweekDisplayMode === 'route';
@@ -1787,7 +1814,7 @@ export default function CompetitionDetailScreen() {
                   <View style={styles.webGameweekHeaderText}>
                     <View style={styles.webGwTitleRow}>
                       <Text style={[styles.webGameweekTitle, gameweekDisplayMode === 'route' ? styles.webGameweekTitleRoute : null]}>Gameweek {gw.weekNumber}</Text>
-                      <Text style={[styles.webGwBadge, isCompleted ? styles.webGwBadgeGray : isLocked ? styles.webGwBadgeRed : styles.webGwBadgeYellow]}>{isCompleted ? 'Completed' : isLocked ? 'Locked' : `Locks ${distanceToNow(gw.lockAt)}`}</Text>
+                      <Text style={[styles.webGwBadge, isCompleted ? styles.webGwBadgeGray : isLocked ? styles.webGwBadgeRed : styles.webGwBadgeYellow]}>{gw.gameweekVoided ? 'Voided' : isCompleted ? 'Completed' : isLocked ? 'Locked' : `Locks ${distanceToNow(gw.lockAt)}`}</Text>
                     </View>
                     {collapsed && myPickForGw ? <Text style={styles.webCollapsedPick}>Selected: <Text style={[styles.webCollapsedPickTeam, pickOutcomeTextStyle(myPickForGw.outcome)]}>{myPickForGw.teamShortName}</Text></Text> : null}
                     {collapsed && !myPickForGw && isParticipant && !isEliminated && !isWinner && !isLocked ? <Text style={styles.noPickText}>No pick yet</Text> : null}
@@ -1836,7 +1863,7 @@ export default function CompetitionDetailScreen() {
                             {lifelineChecked ? <Text style={styles.lifelineCheckboxTick}>✓</Text> : null}
                           </View>
                           <View style={styles.lifelineTextCol}>
-                            <Text style={styles.lifelineBoxText}>{isEliminated ? 'Lifeline unavailable because this entry is eliminated' : participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
+                            <Text style={styles.lifelineBoxText}>{competition?.paused ? 'Lifeline unavailable while the competition is paused' : isEliminated ? 'Lifeline unavailable because this entry is eliminated' : participant?.lifelineUsed ? `Lifeline already used${participant.lifelineUsedWeek ? ` in Gameweek ${participant.lifelineUsedWeek}` : ''}.` : lifelineSelectedElsewhere ? 'Lifeline already selected for another gameweek' : 'Use lifeline for this gameweek'}</Text>
                             {!participant?.lifelineUsed && !isEliminated && !routeMode ? <Text style={styles.lifelineBoxHelp}>Spent once selected. A draw advances; a loss still eliminates.</Text> : null}
                           </View>
                         </View>
@@ -1849,15 +1876,19 @@ export default function CompetitionDetailScreen() {
                       <MyRoutePanel
                         teams={uniqueTeamsForFixtures(gw.fixtures, gw.gameweekId, gw.gameweekStatus, (teamId, shortName, name) => getTeamPickStat(gw.gameweekId, teamId, shortName, name))}
                         currentPick={myPickForGw ?? null}
+                        currentGameweekId={gw.gameweekId}
                         consumedTeamIds={consumedTeamIds}
-                        canPick={isParticipant && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !(isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek) && selectedEntry?.status === 'ACTIVE'}
+                        reservedTeamIds={reservedTeamIds}
+                        pickHistory={pickHistory}
+                        showReserved={gw.gameweekStatus === 'UPCOMING' && !isPastDate(gw.lockAt)}
+                        canPick={isParticipant && !competition?.paused && !gw.gameweekVoided && !isCompleted && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !(isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek) && selectedEntry?.status === 'ACTIVE'}
                         saving={pickMutation.isPending}
                         lifelineChecked={lifelineChecked}
                         onPick={(team) => handlePick({ gwId: gw.gameweekId, teamId: team.teamId, teamName: team.teamName, teamShortName: team.teamShortName, useLifeline: lifelineChecked })}
                       />
                     ) : gw.fixtures.map((f) => {
                       const eliminatedBeforeThisGw = isEliminated && participant?.eliminatedWeek != null && gw.weekNumber > participant.eliminatedWeek;
-                      const canPickThisGw = isParticipant && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
+                      const canPickThisGw = isParticipant && !competition?.paused && !gw.gameweekVoided && !isCompleted && !isEliminated && !isWinner && !paymentBlocksPicks && !isLocked && !eliminatedBeforeThisGw && selectedEntry?.status === 'ACTIVE';
                       const homeIsMyPick = myPickForGw?.teamId === f.homeTeamId;
                       const awayIsMyPick = myPickForGw?.teamId === f.awayTeamId;
                       const homeUsed = consumedTeamIds.has(f.homeTeamId) && !homeIsMyPick;
@@ -2200,7 +2231,11 @@ function uniqueTeamsForFixtures(fixtures: Fixture[], gameweekId: number, gamewee
 function MyRoutePanel({
   teams,
   currentPick,
+  currentGameweekId,
   consumedTeamIds,
+  reservedTeamIds,
+  pickHistory,
+  showReserved,
   canPick,
   saving,
   lifelineChecked,
@@ -2208,15 +2243,40 @@ function MyRoutePanel({
 }: {
   teams: RouteTeam[];
   currentPick: { teamId: number; teamName: string; teamShortName: string; outcome?: string; useLifeline?: boolean } | null;
+  currentGameweekId: number;
   consumedTeamIds: Set<number>;
+  reservedTeamIds: Set<number>;
+  pickHistory: PickHistoryItem[];
+  showReserved: boolean;
   canPick: boolean;
   saving: boolean;
   lifelineChecked: boolean;
   onPick: (team: RouteTeam) => void;
 }) {
-  const usedInThisGameweek = teams.filter((team) => consumedTeamIds.has(team.teamId) && currentPick?.teamId !== team.teamId);
-  const availableTeams = teams.filter((team) => !consumedTeamIds.has(team.teamId) || currentPick?.teamId === team.teamId);
   const currentPickFixture = currentPick ? teams.find((team) => team.teamId === currentPick.teamId) : null;
+  const routeTeamById = new Map(teams.map((team) => [team.teamId, team]));
+  const historyTeam = (pick: PickHistoryItem): RouteTeam => routeTeamById.get(pick.teamId) ?? {
+    teamId: pick.teamId,
+    teamName: pick.teamName,
+    teamShortName: pick.teamShortName,
+    opponentShortName: '—',
+    opponentName: 'Not in this gameweek',
+    venueLabel: '',
+  };
+  const usedInThisGameweek = pickHistory
+    .filter((pick) => consumedTeamIds.has(pick.teamId) && pick.gameweekId !== currentGameweekId)
+    .map(historyTeam)
+    .filter((team, index, all) => all.findIndex((candidate) => candidate.teamId === team.teamId) === index);
+  const reservedInOtherGameweeks = pickHistory
+    .filter((pick) => reservedTeamIds.has(pick.teamId) && pick.gameweekId !== currentGameweekId)
+    .map(historyTeam)
+    .filter((team, index, all) => all.findIndex((candidate) => candidate.teamId === team.teamId) === index);
+  const availableTeams = teams.filter((team) => {
+    const picked = currentPick?.teamId === team.teamId;
+    const used = consumedTeamIds.has(team.teamId) && !picked;
+    const reserved = showReserved && reservedTeamIds.has(team.teamId) && !picked;
+    return picked || (!used && !reserved);
+  });
 
   return (
     <View style={styles.routePanel}>
@@ -2241,6 +2301,7 @@ function MyRoutePanel({
       <View style={styles.routeStatsRow}>
         <View style={styles.routeStatBox}><Text style={styles.routeStatValue}>{availableTeams.length}</Text><Text style={styles.routeStatLabel}>Available here</Text></View>
         <View style={styles.routeStatBox}><Text style={styles.routeStatValue}>{usedInThisGameweek.length}</Text><Text style={styles.routeStatLabel}>Already used</Text></View>
+        <View style={styles.routeStatBox}><Text style={styles.routeStatValue}>{reservedInOtherGameweeks.length}</Text><Text style={styles.routeStatLabel}>Reserved</Text></View>
       </View>
 
       {usedInThisGameweek.length > 0 ? (
@@ -2248,6 +2309,15 @@ function MyRoutePanel({
           <Text style={styles.routeSectionTitle}>Used before</Text>
           <View style={styles.routeChipWrap}>
             {usedInThisGameweek.map((team) => <Text key={team.teamId} style={styles.routeUsedChip}>{team.teamShortName}</Text>)}
+          </View>
+        </View>
+      ) : null}
+
+      {reservedInOtherGameweeks.length > 0 ? (
+        <View style={styles.routeSection}>
+          <Text style={styles.routeSectionTitle}>Reserved in another gameweek</Text>
+          <View style={styles.routeChipWrap}>
+            {reservedInOtherGameweeks.map((team) => <Text key={team.teamId} style={styles.routeReservedChip}>{team.teamShortName}</Text>)}
           </View>
         </View>
       ) : null}
@@ -2311,6 +2381,10 @@ const styles = StyleSheet.create({
   heroMetaChip: { overflow: 'hidden', borderRadius: 999, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#00000033', color: '#d1d5db', fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6 },
   lifelineChipOn: { borderColor: '#22c55e55', backgroundColor: '#22c55e18', color: '#bbf7d0' },
   heroActionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  pauseBanner: { marginTop: 16, borderWidth: 1, borderColor: '#f59e0b66', backgroundColor: '#f59e0b14', borderRadius: 18, padding: 14 },
+  pauseBannerTitle: { color: '#fde68a', fontSize: 16, fontWeight: '900' },
+  pauseBannerBody: { color: '#fef3c7', fontSize: 13, lineHeight: 19, fontWeight: '700', marginTop: 5 },
+  pauseBannerMeta: { color: '#cbd5e1', fontSize: 11, lineHeight: 17, marginTop: 7 },
   inviteBtn: { borderWidth: 1, borderColor: '#ffffff33', backgroundColor: '#ffffff12', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
   inviteBtnText: { color: '#f8fafc', fontSize: 12, fontWeight: '800' },
   survivorBtn: { borderWidth: 1, borderColor: '#38bdf855', backgroundColor: '#38bdf818', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
@@ -2523,6 +2597,7 @@ const styles = StyleSheet.create({
   routeSectionTitle: { color: '#cbd5e1', fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1.4 },
   routeChipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   routeUsedChip: { overflow: 'hidden', borderRadius: 999, borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b1a', color: '#fcd34d', paddingHorizontal: 10, paddingVertical: 6, fontSize: 12, fontWeight: '900', textDecorationLine: 'line-through' },
+  routeReservedChip: { overflow: 'hidden', borderRadius: 999, borderWidth: 1, borderColor: '#22d3ee55', backgroundColor: '#06b6d41a', color: '#a5f3fc', paddingHorizontal: 10, paddingVertical: 6, fontSize: 12, fontWeight: '900' },
   routeTeamChip: { width: '30.5%', minWidth: 86, borderRadius: 12, borderWidth: 1, borderColor: '#334155', backgroundColor: '#1f2937', paddingHorizontal: 8, paddingVertical: 8 },
   routeTeamChipPicked: { borderColor: '#7dd3fc', backgroundColor: '#0284c7' },
   routeTeamChipDisabled: { opacity: 0.55 },

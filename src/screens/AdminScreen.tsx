@@ -1284,7 +1284,13 @@ export default function AdminScreen() {
                         </View>
                       </TouchableOpacity>
                     ) : null}
-                    <PrimaryButton label={simulateResult.isPending ? 'Processing...' : isCorrectionMode ? 'Save Correction & Reprocess' : 'Process Results & Eliminate Participants'} onPress={() => simulateResult.mutate()} disabled={simulateResult.isPending || !hasFixtureResults} />
+                    {selectedCompetition?.paused && !isCorrectionMode ? (
+                      <View style={styles.simulateWarningPanel}>
+                        <Text style={styles.simulateWarningTitle}>Paused competition</Text>
+                        <Text style={styles.simulateWarningText}>Processing these test results will save fixture overrides, void this gameweek, and apply no eliminations.</Text>
+                      </View>
+                    ) : null}
+                    <PrimaryButton label={simulateResult.isPending ? 'Processing...' : isCorrectionMode ? 'Save Correction & Reprocess' : selectedCompetition?.paused ? 'Void Gameweek Without Eliminations' : 'Process Results & Eliminate Participants'} onPress={() => simulateResult.mutate()} disabled={simulateResult.isPending || !hasFixtureResults} />
                     {!hasFixtureResults ? <Text style={styles.simulateNeedResult}>Set at least one fixture result to continue</Text> : null}
                   </View>
                 ) : null}

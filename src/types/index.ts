@@ -31,6 +31,9 @@ export interface Competition {
   name: string;
   description?: string;
   status: 'UPCOMING' | 'ACTIVE' | 'COMPLETED';
+  paused?: boolean;
+  pauseReason?: string | null;
+  pausedAt?: string | number[] | null;
   startDate?: string | null;
   firstGameweekDate?: string | null;
   entryFee: number;
@@ -99,7 +102,9 @@ export interface GameweekResponse {
   id: number;
   weekNumber: number;
   lockAt: string;
-  status: 'UPCOMING' | 'LOCKED' | 'IN_PROGRESS' | 'COMPLETED';
+  status: 'UPCOMING' | 'LOCKED' | 'IN_PROGRESS' | 'COMPLETED' | 'VOIDED';
+  voided?: boolean;
+  voidReason?: string | null;
 }
 
 export interface Fixture {
@@ -139,7 +144,9 @@ export interface PickResponse {
 
 export interface SurvivorGameweekMeta {
   weekNumber: number;
-  status: 'UPCOMING' | 'LOCKED' | 'IN_PROGRESS' | 'COMPLETED';
+  status: 'UPCOMING' | 'LOCKED' | 'IN_PROGRESS' | 'COMPLETED' | 'VOIDED';
+  voided?: boolean;
+  voidReason?: string | null;
 }
 
 export interface SurvivorPickCell {
@@ -183,6 +190,8 @@ export interface GameweekSelection {
 export interface GameweekSelectionsData {
   selections: GameweekSelection[];
   byeGranted: boolean;
+  voided?: boolean;
+  voidReason?: string | null;
   weekNumber: number;
   activeAtStart?: number;
   advancedThisWeek?: number;

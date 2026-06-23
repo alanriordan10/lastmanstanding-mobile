@@ -128,6 +128,8 @@ export default function ClubAdminScreen() {
   const [announcingCompetition, setAnnouncingCompetition] = useState<Competition | null>(null);
   const [announcementTitle, setAnnouncementTitle] = useState('');
   const [announcementMessage, setAnnouncementMessage] = useState('');
+  const [pausingCompetition, setPausingCompetition] = useState<Competition | null>(null);
+  const [pauseReason, setPauseReason] = useState('');
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -332,7 +334,7 @@ export default function ClubAdminScreen() {
     setFormErrors({});
     setShowStartDatePicker(false);
     setShowCompetitionModal(false);
-    setOpStatus({ tone: 'success', message: formMode === 'create' ? 'Competition created.' : 'Competition updated.' });
+    setOpStatus({ tone: 'success', message: formMode === 'create' ? 'Competition created with fixtures ready.' : 'Competition updated.' });
     await queryClient.invalidateQueries({ queryKey: ['club-admin', 'competitions'] });
     const id = (res.data as any)?.id;
     if (id) { setSelectedCompetitionId(id); setManagingCompetitionId(id); }
@@ -353,6 +355,26 @@ export default function ClubAdminScreen() {
       await queryClient.invalidateQueries({ queryKey: ['club-admin', 'competitions'] });
     },
     onError: (e: any) => setOpStatus({ tone: 'error', message: getApiMessage(e, 'Failed to delete competition.') }),
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: async () => api.post(`/club-admin/competitions/${pausingCompetition?.id}/pause`, { reason: pauseReason.trim() }),
+    onSuccess: async () => {
+      setOpStatus({ tone: 'success', message: `${pausingCompetition?.name ?? 'Competition'} paused.` });
+      setPausingCompetition(null);
+      setPauseReason('');
+      await queryClient.invalidateQueries({ queryKey: ['club-admin', 'competitions'] });
+    },
+    onError: (error: any) => setOpStatus({ tone: 'error', message: getApiMessage(error, 'Could not pause competition.') }),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: async (competitionId: number) => api.post(`/club-admin/competitions/${competitionId}/resume`),
+    onSuccess: async () => {
+      setOpStatus({ tone: 'success', message: 'Competition resumed. Original fixture and lock times remain unchanged.' });
+      await queryClient.invalidateQueries({ queryKey: ['club-admin', 'competitions'] });
+    },
+    onError: (error: any) => setOpStatus({ tone: 'error', message: getApiMessage(error, 'Could not resume competition.') }),
   });
 
   const announcementMutation = useMutation({
@@ -721,6 +743,7 @@ export default function ClubAdminScreen() {
                       <View style={styles.webCompetitionTitleBlock}>
                         <View style={styles.webBadgeTitleRow}>
                           <StatusPill text={c.status} tone={c.status === 'ACTIVE' ? 'success' : c.status === 'UPCOMING' ? 'info' : 'neutral'} />
+                          {c.paused ? <StatusPill text="PAUSED" tone="warn" /> : null}
                           <StatusPill text={c.visibility === 'PRIVATE' ? 'PRIVATE' : 'PUBLIC'} tone={c.visibility === 'PRIVATE' ? 'warn' : 'neutral'} />
                         </View>
                         <Text style={styles.webCompetitionName} numberOfLines={1}>{c.name}</Text>
@@ -732,6 +755,9 @@ export default function ClubAdminScreen() {
                       </View>
                     </View>
                   </TouchableOpacity>
+                  {c.paused && c.pauseReason ? (
+                    <View style={styles.pauseReasonBox}><Text style={styles.pauseReasonText}><Text style={styles.pauseReasonStrong}>Paused: </Text>{c.pauseReason}</Text></View>
+                  ) : null}
                   {c.visibility === 'PRIVATE' && c.joinCode ? (
                     <View style={styles.inviteCodeBox}>
                       <Text style={styles.inviteCodeLabel}>Invite code</Text>
@@ -751,6 +777,23 @@ export default function ClubAdminScreen() {
                     setExpandedParticipantIds(new Set());
                     setShowAddPanel(false);
                   }}><Text style={styles.dropdownBtnText}>{managing ? 'Participants ▲' : 'Participants ▼'}</Text></TouchableOpacity>
+                    {c.status !== 'COMPLETED' ? (
+                      <TouchableOpacity style={[styles.webActionBtn, styles.pauseCompBtn]} onPress={() => {
+                        if (c.paused) {
+                          setConfirmDialog({
+                            title: `Resume ${c.name}?`,
+                            message: 'Players can join, pay and pick again if the original gameweek lock has not passed. Lock times remain fixed to fixture kickoff and are never moved.',
+                            confirmText: 'Resume Competition',
+                            onConfirm: () => resumeMutation.mutateAsync(c.id),
+                          });
+                        } else {
+                          setPausingCompetition(c);
+                          setPauseReason('');
+                        }
+                      }} disabled={resumeMutation.isPending}>
+                        <Text style={styles.pauseCompBtnText}>{c.paused ? 'Resume' : 'Pause'}</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity style={[styles.webActionBtn, styles.announceCompBtn]} onPress={() => { setAnnouncingCompetition(c); setAnnouncementTitle(''); setAnnouncementMessage(''); }}>
                       <Text style={styles.announceCompBtnText}>Announce</Text>
                     </TouchableOpacity>
@@ -912,6 +955,31 @@ export default function ClubAdminScreen() {
           })}
           {filteredCompetitions.length === 0 ? <MetaText>No competitions match your filters</MetaText> : null}
         </Card>
+
+        <Modal visible={pausingCompetition !== null} animationType="slide" transparent onRequestClose={() => setPausingCompetition(null)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalTitle}>Pause Competition</Text>
+                  <Text style={styles.modalSubtitle}>Joining, payments, picks, reminders and automatic processing stop until resumed. Fixture kickoff and gameweek lock times remain unchanged.</Text>
+                </View>
+                <TouchableOpacity style={styles.modalCloseButton} onPress={() => setPausingCompetition(null)}><Text style={styles.modalCloseText}>X</Text></TouchableOpacity>
+              </View>
+              <View style={styles.modalSection}>
+                <Text style={styles.fieldLabel}>Reason shown to participants</Text>
+                <TextInput value={pauseReason} onChangeText={setPauseReason} maxLength={500} placeholder="Awaiting a corrected fixture result" placeholderTextColor={colors.textMuted} style={[styles.modalInput, styles.announcementMessageInput]} multiline />
+                <Text style={styles.announcementCount}>{pauseReason.length}/500</Text>
+              </View>
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.modalCancelButton} onPress={() => setPausingCompetition(null)}><Text style={styles.modalCancelText}>Cancel</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.modalSaveButton, !pauseReason.trim() ? styles.actionBtnDisabled : null]} onPress={() => pauseMutation.mutate()} disabled={pauseMutation.isPending || !pauseReason.trim()}>
+                  <Text style={styles.modalSaveText}>{pauseMutation.isPending ? 'Pausing...' : 'Pause Competition'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         <Modal visible={announcingCompetition !== null} animationType="slide" transparent onRequestClose={() => setAnnouncingCompetition(null)}>
           <View style={styles.modalBackdrop}>
@@ -1146,7 +1214,7 @@ export default function ClubAdminScreen() {
                     <Text style={styles.modalCancelText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.modalSaveButton} onPress={saveCompetition} disabled={saveCompetitionMutation.isPending}>
-                    <Text style={styles.modalSaveText}>{saveCompetitionMutation.isPending ? 'Saving...' : formMode === 'create' ? 'Create Competition' : 'Save Changes'}</Text>
+                    <Text style={styles.modalSaveText}>{saveCompetitionMutation.isPending ? (formMode === 'create' ? 'Creating & syncing...' : 'Saving...') : formMode === 'create' ? 'Create Competition' : 'Save Changes'}</Text>
                   </TouchableOpacity>
                 </View>
               </ScrollView>
@@ -1485,6 +1553,11 @@ const styles = StyleSheet.create({
   dropdownBtn: { marginTop: 6, borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: '#ffffff08', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
   compActionRow: { marginTop: 6, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   dropdownBtnInline: { borderWidth: 1, borderColor: '#26354d', backgroundColor: '#0b1324', borderRadius: 12 },
+  pauseCompBtn: { borderWidth: 1, borderColor: '#eab30855', backgroundColor: '#eab30818' },
+  pauseCompBtnText: { color: '#fde68a', fontSize: 12, fontWeight: '900' },
+  pauseReasonBox: { marginTop: 9, borderWidth: 1, borderColor: '#eab30844', backgroundColor: '#eab30814', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  pauseReasonText: { color: '#fef3c7', fontSize: 11, lineHeight: 16 },
+  pauseReasonStrong: { fontWeight: '900' },
   announceCompBtn: { borderWidth: 1, borderColor: '#f59e0b55', backgroundColor: '#f59e0b18' },
   announceCompBtnText: { color: '#fde68a', fontSize: 12, fontWeight: '900' },
   deleteCompBtn: { borderWidth: 1, borderColor: '#ef444455', backgroundColor: '#ef444422' },

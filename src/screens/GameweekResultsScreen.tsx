@@ -239,7 +239,14 @@ export default function GameweekResultsScreen() {
           </View>
         ) : null}
 
-        {data?.byeGranted ? (
+        {data?.voided ? (
+          <Card>
+            <SectionTitle>Gameweek Voided</SectionTitle>
+            <MetaText>{data.voidReason ?? 'The competition was paused when this gameweek locked.'} No one was eliminated, and this gameweek does not consume a team or lifeline.</MetaText>
+          </Card>
+        ) : null}
+
+        {data?.byeGranted && !data?.voided ? (
           <Card>
             <SectionTitle>All Participants Granted Bye</SectionTitle>
             <MetaText>All remaining participants would have been eliminated in this gameweek, so everyone advanced to keep the competition fair.</MetaText>
