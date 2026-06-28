@@ -1428,6 +1428,11 @@ export default function CompetitionDetailScreen() {
         merchantDisplayName: 'Last Man Standing',
         paymentIntentClientSecret: intent.clientSecret,
         returnURL: 'lastmanstanding://stripe-redirect',
+        defaultBillingDetails: {
+          address: {
+            country: 'IE',
+          },
+        },
         style: 'alwaysDark',
         primaryButtonLabel: `Pay €${((intent.amountCents ?? 0) / 100).toFixed(2)} & join`,
         appearance: {
