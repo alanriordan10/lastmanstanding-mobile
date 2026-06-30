@@ -19,6 +19,10 @@ type PaymentIntentResponse = {
   clientSecret: string;
   paymentIntentId: string;
   amountCents: number;
+  platformFeeEnabled?: boolean;
+  platformFeeBps?: number;
+  platformFeeCents?: number;
+  estimatedOrganiserNetAfterPlatformFeeCents?: number;
 };
 
 type GameweekDisplayMode = 'cards' | 'route';
@@ -1483,8 +1487,16 @@ export default function CompetitionDetailScreen() {
         throw new Error(initResult.error.message ?? 'Could not initialise the payment form.');
       }
 
+      const paymentNotes: string[] = [];
       if (!googlePaySupported) {
-        setPaymentActionSuccess('Google Pay is not available on this device/build, so Stripe will show the other payment options.');
+        paymentNotes.push('Google Pay is not available on this device/build, so Stripe will show the other payment options.');
+      }
+      if (intent.platformFeeEnabled && (intent.platformFeeCents ?? 0) > 0) {
+        const percent = ((intent.platformFeeBps ?? 0) / 100).toFixed(2).replace(/\.00$/, '');
+        paymentNotes.push(`Includes ${percent}% platform fee. Organiser net estimate: €${((intent.estimatedOrganiserNetAfterPlatformFeeCents ?? 0) / 100).toFixed(2)}.`);
+      }
+      if (paymentNotes.length > 0) {
+        setPaymentActionSuccess(paymentNotes.join(' '));
       }
 
       const paymentResult = await stripe.presentPaymentSheet();
